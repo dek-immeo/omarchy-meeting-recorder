@@ -3,13 +3,16 @@ import SwiftUI
 
 @MainActor
 final class Recorder: ObservableObject {
-    enum Phase { case ready, starting, recording, stopping }
+    enum Phase { case ready, starting, recording, stopping, transcribing }
     @Published private(set) var phase = Phase.ready
     @Published private(set) var started: Date?
     @Published private(set) var lastFolder: URL?
     @Published private(set) var message: String?
     struct Reading { let level: Float; let date: Date }
     @Published private(set) var meters: [Track: Reading] = [:]
+    @Published private(set) var transcriptionStatus = ""
+    private let transcriber = Transcription()
+    private var quitting = false
     private var capture: Capture?
     private var transition: Task<Void, Never>?
     private var stopRequested = false
@@ -39,7 +42,7 @@ final class Recorder: ObservableObject {
                 if stopRequested { await finish() }
             } catch {
                 let reason = error.localizedDescription
-                if capture != nil { await finish() }
+                if capture != nil { await finish(transcribe: false) }
                 message = reason
                 phase = .ready
                 started = nil
@@ -54,19 +57,53 @@ final class Recorder: ObservableObject {
         transition = Task { await finish() }
     }
 
-    private func finish() async {
+    private func finish(transcribe: Bool = true) async {
         phase = .stopping
         if let capture {
             message = await capture.stop()
             if FileManager.default.fileExists(atPath: capture.folder.path) { lastFolder = capture.folder }
         }
+        let folder = capture?.folder
         capture = nil
         meters = [:]
         phase = .ready
         started = nil
+        if transcribe, !quitting, let folder, message == nil {
+            await writeTranscript(in: folder)
+        }
     }
 
+    private func writeTranscript(in folder: URL) async {
+        phase = .transcribing
+        lastFolder = folder
+        message = nil
+        transcriptionStatus = "Klargør lokal transskription …"
+        do {
+            try await transcriber.run(folder: folder) { self.transcriptionStatus = $0 }
+        } catch { message = error.localizedDescription }
+        phase = .ready
+    }
+
+    func selectRecording() {
+        guard phase == .ready else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.prompt = "Transskriber"
+        panel.message = "Vælg mødemappen med Mikrofon.wav og Systemlyd.wav."
+        panel.directoryURL = lastFolder?.deletingLastPathComponent() ?? FileManager.default
+            .urls(for: .musicDirectory, in: .userDomainMask).first?.appendingPathComponent("Meeting Recorder")
+        if panel.runModal() == .OK, let folder = panel.url {
+            phase = .transcribing
+            transition = Task { await writeTranscript(in: folder) }
+        }
+    }
+
+    func cancelTranscription() { transcriber.cancel() }
+
     func prepareToQuit() async {
+        quitting = true
+        cancelTranscription()
         stop()
         await transition?.value
     }
@@ -131,6 +168,14 @@ struct RecorderView: View {
                 }
             }
             Divider()
+            if phase == .transcribing {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text(recorder.transcriptionStatus).lineLimit(2)
+                    Spacer()
+                    Button("Annuller") { recorder.cancelTranscription() }
+                }
+            }
             if let message = recorder.message {
                 Label(message, systemImage: "exclamationmark.triangle").textSelection(.enabled)
             }
@@ -142,10 +187,20 @@ struct RecorderView: View {
                           systemImage: phase == .recording || phase == .stopping ? "stop.fill" : "record.circle")
                 }
                 .buttonStyle(.borderedProminent).controlSize(.large)
-                .disabled(phase == .starting || phase == .stopping)
+                .disabled(phase != .ready && phase != .recording)
                 Spacer()
                 if let folder = recorder.lastFolder {
                     Button("Vis seneste optagelse") { NSWorkspace.shared.open(folder) }
+                }
+            }
+            if phase == .ready {
+                HStack {
+                    Button("Transskriber tidligere optagelse…") { recorder.selectRecording() }
+                    Spacer()
+                    if let file = recorder.lastFolder?.appendingPathComponent("Transskription.md"),
+                       FileManager.default.fileExists(atPath: file.path) {
+                        Button("Åbn transskription") { NSWorkspace.shared.open(file) }
+                    }
                 }
             }
         }
@@ -157,6 +212,7 @@ struct RecorderView: View {
         case .starting: return "Starter optagelse…"
         case .recording: return "Optager"
         case .stopping: return "Gemmer optagelse…"
+        case .transcribing: return "Transskriberer"
         }
     }
 }
