@@ -4,8 +4,9 @@ import ScreenCaptureKit
 
 @MainActor
 final class Recorder: ObservableObject {
-    enum Phase { case ready, checking, starting, recording, stopping, transcribing }
+    enum Phase { case ready, checking, starting, recording, paused, stopping, importing, transcribing }
     @Published private(set) var phase = Phase.ready
+    @Published private(set) var pausedAt: Date?
     @Published private(set) var started: Date?
     @Published private(set) var lastFolder: URL?
     @Published private(set) var message: String?
@@ -59,11 +60,7 @@ final class Recorder: ObservableObject {
                 let display = try await availableDisplay()
                 guard !Task.isCancelled else { return }
                 phase = .starting
-                let music = try FileManager.default.url(for: .musicDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                let stamp = DateFormatter()
-                stamp.dateFormat = "yyyy-MM-dd HH.mm.ss"
-                let folder = music.appendingPathComponent("Meeting Recorder", isDirectory: true)
-                    .appendingPathComponent("\(stamp.string(from: Date())) \(UUID().uuidString.prefix(8))", isDirectory: true)
+                let folder = try MeetingFiles.newFolder()
                 let session = Capture(folder: folder, meter: { [weak self] track, peak in
                     Task { @MainActor in self?.meters[track] = Reading(level: peak, date: Date()) }
                 }, interrupted: { [weak self] in Task { @MainActor in self?.stop() } })
@@ -84,6 +81,22 @@ final class Recorder: ObservableObject {
         }
     }
 
+    func togglePause() {
+        guard let capture else { return }
+        let now = Date()
+        if phase == .recording {
+            capture.setPaused(true)
+            pausedAt = now
+            meters = [:]
+            phase = .paused
+        } else if phase == .paused, let pausedAt, let started {
+            capture.setPaused(false)
+            self.started = started.addingTimeInterval(now.timeIntervalSince(pausedAt))
+            self.pausedAt = nil
+            phase = .recording
+        }
+    }
+
     func stop() {
         if phase == .checking {
             // ScreenCaptureKit may return after the person has cancelled or quit.
@@ -94,7 +107,7 @@ final class Recorder: ObservableObject {
             return
         }
         if phase == .starting { stopRequested = true; return }
-        guard phase == .recording else { return }
+        guard phase == .recording || phase == .paused else { return }
         phase = .stopping
         transition = Task { await finish() }
     }
@@ -107,6 +120,7 @@ final class Recorder: ObservableObject {
         }
         let folder = capture?.folder
         capture = nil
+        pausedAt = nil
         meters = [:]
         phase = .ready
         started = nil
@@ -133,13 +147,34 @@ final class Recorder: ObservableObject {
         phase = .ready
     }
 
+    func importAudio() {
+        guard phase == .ready, configured else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio]
+        panel.prompt = "Importer"
+        guard panel.runModal() == .OK, let file = panel.url else { return }
+        message = nil
+        permissionIssue = nil
+        phase = .importing
+        transition = Task {
+            do {
+                let folder = try MeetingFiles.newFolder(title: file.deletingPathExtension().lastPathComponent)
+                try await MeetingFiles.importAudio(file, to: folder)
+                await writeTranscript(in: folder)
+            } catch {
+                message = error.localizedDescription
+                phase = .ready
+            }
+        }
+    }
+
     func selectRecording() {
         guard phase == .ready else { return }
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.prompt = "Transskriber"
-        panel.message = "Vælg mødemappen med Mikrofon.wav og Systemlyd.wav."
+        panel.message = "Vælg mødemappen med lydsporene."
         panel.directoryURL = lastFolder?.deletingLastPathComponent() ?? FileManager.default
             .urls(for: .musicDirectory, in: .userDomainMask).first?.appendingPathComponent("Meeting Recorder")
         if panel.runModal() == .OK, let folder = panel.url {
@@ -152,6 +187,7 @@ final class Recorder: ObservableObject {
 
     func prepareToQuit() async {
         quitting = true
+        if phase == .importing { transition?.cancel() }
         cancelTranscription()
         stop()
         await transition?.value
@@ -195,6 +231,7 @@ struct Meter: View {
 
 struct RecorderView: View {
     @ObservedObject var recorder: Recorder
+    @State private var review: MeetingSelection?
     var body: some View {
         let phase = recorder.phase
         VStack(alignment: .leading, spacing: 20) {
@@ -204,7 +241,7 @@ struct RecorderView: View {
                 Spacer()
                 if let started = recorder.started {
                     TimelineView(.periodic(from: started, by: 1)) { time in
-                        let seconds = max(0, Int(time.date.timeIntervalSince(started)))
+                        let seconds = max(0, Int((recorder.pausedAt ?? time.date).timeIntervalSince(started)))
                         Text(String(format: "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60))
                             .monospacedDigit().font(.title2)
                     }
@@ -255,11 +292,14 @@ struct RecorderView: View {
                 Button {
                     if phase == .ready { recorder.start() } else { recorder.stop() }
                 } label: {
-                    Label(phase == .checking ? "Annuller" : (phase == .recording || phase == .stopping ? "Stop optagelse" : "Start optagelse"),
-                          systemImage: phase == .checking ? "xmark" : (phase == .recording || phase == .stopping ? "stop.fill" : "record.circle"))
+                    Label(phase == .checking ? "Annuller" : (phase == .recording || phase == .paused || phase == .stopping ? "Stop optagelse" : "Start optagelse"),
+                          systemImage: phase == .checking ? "xmark" : (phase == .recording || phase == .paused || phase == .stopping ? "stop.fill" : "record.circle"))
                 }
                 .buttonStyle(.borderedProminent).controlSize(.large)
-                .disabled((phase != .ready && phase != .recording && phase != .checking) || (phase == .ready && !recorder.configured))
+                .disabled((phase != .ready && phase != .recording && phase != .paused && phase != .checking) || (phase == .ready && !recorder.configured))
+                if phase == .recording || phase == .paused {
+                    Button(phase == .paused ? "Genoptag" : "Pause") { recorder.togglePause() }
+                }
                 Spacer()
                 if let folder = recorder.lastFolder {
                     Button("Vis seneste optagelse") { NSWorkspace.shared.open(folder) }
@@ -267,16 +307,27 @@ struct RecorderView: View {
             }
             if phase == .ready {
                 HStack {
+                    Button("Åbn møde…") {
+                        let panel = NSOpenPanel()
+                        panel.canChooseFiles = false
+                        panel.canChooseDirectories = true
+                        panel.directoryURL = MeetingFiles.root
+                        if panel.runModal() == .OK, let url = panel.url { review = MeetingSelection(folder: url) }
+                    }
+                    Button("Importer lyd…") { recorder.importAudio() }.disabled(!recorder.configured)
+                }
+                HStack {
                     Button("Transskriber tidligere optagelse…") { recorder.selectRecording() }.disabled(!recorder.configured)
                     Spacer()
                     if let file = recorder.transcriptFile,
                        FileManager.default.fileExists(atPath: file.path) {
-                        Button("Åbn transskription") { NSWorkspace.shared.open(file) }
+                        Button("Åbn transskription") { review = MeetingSelection(folder: file.deletingLastPathComponent(), preferred: file.lastPathComponent) }
                     }
                 }
             }
         }
         .padding(24).frame(minWidth: 445, idealWidth: 480)
+        .sheet(item: $review) { MeetingReview(selection: $0) }
     }
     private var status: String {
         switch recorder.phase {
@@ -284,6 +335,8 @@ struct RecorderView: View {
         case .checking: return "Kontrollerer adgang…"
         case .starting: return "Starter optagelse…"
         case .recording: return "Optager"
+        case .paused: return "På pause"
+        case .importing: return "Importerer lyd…"
         case .stopping: return "Gemmer optagelse…"
         case .transcribing: return "Transskriberer"
         }

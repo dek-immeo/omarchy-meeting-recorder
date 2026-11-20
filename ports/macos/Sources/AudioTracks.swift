@@ -118,3 +118,25 @@ final class WaveTrack {
         return min(1, peak)
     }
 }
+
+// Map both capture devices to the same clock after removing paused intervals.
+struct RecordingClock {
+    private(set) var pausedAt: Double?
+    private var excluded = 0.0
+    private var resumedAt = -Double.infinity
+
+    mutating func pause(at now: Double) {
+        if pausedAt == nil { pausedAt = now }
+    }
+    mutating func resume(at now: Double) {
+        guard let pausedAt else { return }
+        excluded += now - pausedAt
+        resumedAt = now
+        self.pausedAt = nil
+    }
+    func sampleTime(_ time: Double) -> Double? {
+        guard pausedAt == nil, time >= resumedAt else { return nil }
+        return time - excluded
+    }
+    func endTime(_ time: Double) -> Double { (pausedAt ?? time) - excluded }
+}

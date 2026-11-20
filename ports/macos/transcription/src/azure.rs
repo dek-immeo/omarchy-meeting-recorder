@@ -108,7 +108,7 @@ pub fn run(folder: &Path, scratch: &Path, resource: &str) -> Result<()> {
     }
     println!("Klargør lyd til Azure …");
     let mut uploads = Vec::new();
-    for source in ["Mikrofon", "Systemlyd"] {
+    for source in super::sources(folder)? {
         let original = folder.join(format!("{source}.wav"));
         let reader = hound::WavReader::open(&original)?;
         // 16 kHz mono, two bytes per frame. Check both tracks before sending either one.
