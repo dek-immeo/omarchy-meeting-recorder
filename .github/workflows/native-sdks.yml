@@ -1,0 +1,32 @@
+name: Native audio SDK probes
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'ports/probes/**'
+      - '.github/workflows/native-sdks.yml'
+  pull_request:
+    paths:
+      - 'ports/probes/**'
+      - '.github/workflows/native-sdks.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S ports/probes/windows -B build -A x64
+      - run: cmake --build build --config Release
+
+  apple:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile macOS capture APIs
+        run: xcrun --sdk macosx swiftc -sdk "$(xcrun --sdk macosx --show-sdk-path)" -target arm64-apple-macos13.0 -c ports/probes/AppleAudio.swift -o "$RUNNER_TEMP/mac.o"
+      - name: Compile iPhone capture APIs for a physical device
+        run: xcrun --sdk iphoneos swiftc -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -target arm64-apple-ios17.0 -c ports/probes/AppleAudio.swift -o "$RUNNER_TEMP/iphone.o"

@@ -1,0 +1,8 @@
+{
+  "name": "Meeting Recorder native ports",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "remoteUser": "vscode",
+  "postCreateCommand": "cargo metadata --locked --no-deps --format-version 1 > /dev/null && ffprobe -v error -show_entries stream=codec_name -of csv=p=0 bench/fixtures/call/mic.ogg"
+}
