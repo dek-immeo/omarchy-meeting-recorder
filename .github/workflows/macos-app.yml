@@ -4,17 +4,34 @@ on:
     paths:
       - 'ports/macos/**'
       - '.github/workflows/macos-app.yml'
+      - 'src/nemotron/**'
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   build:
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+      - name: Select stable Rust
+        run: rustup update stable && rustup default stable
+      - name: Cache native worker build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ports/macos/transcription/target
+          key: mac-worker-v1-${{ hashFiles('ports/macos/transcription/Cargo.lock', 'ports/macos/transcription/src/**', 'src/nemotron/**') }}
+          restore-keys: mac-worker-v1-
       - name: Build and sign the app bundle
         run: ports/macos/build.sh
+      - name: Test Azure multipart request and speaker-labelled response
+        run: cargo test --locked --release --target aarch64-apple-darwin --manifest-path ports/macos/transcription/Cargo.toml
+      - name: Test denied and pending recording permissions
+        run: |
+          xcrun swiftc -swift-version 5 -D PERMISSION_TEST -parse-as-library ports/macos/Sources/*.swift ports/macos/Tests/PermissionTests.swift -o "$RUNNER_TEMP/permission-tests"
+          "$RUNNER_TEMP/permission-tests"
       - name: Test both PCM sources and saved audio
         run: |
           xcrun swiftc -parse-as-library ports/macos/Sources/AudioTracks.swift ports/macos/Tests/TrackTests.swift -o "$RUNNER_TEMP/track-tests"
@@ -29,8 +46,35 @@ jobs:
           sleep 4
           kill -0 "$app_pid"
           kill "$app_pid"
+      - name: Verify installer layout and identity
+        run: |
+          mountpoint="$RUNNER_TEMP/meeting-recorder-installer"
+          mkdir -p "$mountpoint"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mountpoint" dist/macos/Meeting-Recorder-macOS-arm64.dmg
+          trap 'hdiutil detach "$mountpoint"' EXIT
+          app="$mountpoint/Meeting Recorder.app"
+          test "$(readlink "$mountpoint/Applications")" = "/Applications"
+          test "$(plutil -extract CFBundleDisplayName raw "$app/Contents/Info.plist")" = "Meeting Recorder"
+          test "$(plutil -extract CFBundleIdentifier raw "$app/Contents/Info.plist")" = "dk.dekimmeo.meetingrecorder"
+          codesign --verify --strict "$app"
+      - name: Cache verified model downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/recorder-ci-models
+          key: recorder-models-${{ hashFiles('ports/macos/transcription/src/models.rs') }}
+      - name: Transcribe four fixture voices with bundled worker and models
+        run: |
+          if ! command -v ffmpeg >/dev/null; then brew install ffmpeg; fi
+          contents="$PWD/dist/macos/Meeting Recorder.app/Contents"
+          export ORT_DYLIB_PATH="$contents/Frameworks/libonnxruntime.dylib"
+          python3 ports/macos/Tests/transcription.py "$contents/Helpers/meeting-transcriber" "$HOME/Library/Caches/recorder-ci-models"
       - uses: actions/upload-artifact@v4
         with:
           name: Meeting-Recorder-macOS-arm64
           path: dist/macos/Meeting-Recorder-macOS-arm64.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Meeting-Recorder-Mac-installer
+          path: dist/macos/Meeting-Recorder-macOS-arm64.dmg
           if-no-files-found: error

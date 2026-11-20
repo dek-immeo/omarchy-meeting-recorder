@@ -5,10 +5,11 @@
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleIdentifier</key><string>dk.dekimmeo.meetingrecorder</string>
     <key>CFBundleExecutable</key><string>MeetingRecorder</string>
+    <key>CFBundleDisplayName</key><string>Meeting Recorder</string>
     <key>CFBundleName</key><string>Meeting Recorder</string>
     <key>CFBundleDevelopmentRegion</key><string>da</string>
-    <key>CFBundleVersion</key><string>1</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleVersion</key><string>3</string>
+    <key>CFBundleShortVersionString</key><string>0.2.1</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>NSMicrophoneUsageDescription</key><string>Meeting Recorder gemmer din mikrofon i mødemappens separate lydspor.</string>
     <key>NSAudioCaptureUsageDescription</key><string>Meeting Recorder gemmer Mac’ens afspillede lyd som et separat lydspor.</string>

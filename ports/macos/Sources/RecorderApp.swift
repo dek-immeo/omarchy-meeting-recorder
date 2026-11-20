@@ -1,29 +1,64 @@
 import AppKit
 import SwiftUI
+import ScreenCaptureKit
 
 @MainActor
 final class Recorder: ObservableObject {
-    enum Phase { case ready, starting, recording, stopping }
+    enum Phase { case ready, checking, starting, recording, stopping, transcribing }
     @Published private(set) var phase = Phase.ready
     @Published private(set) var started: Date?
     @Published private(set) var lastFolder: URL?
     @Published private(set) var message: String?
     struct Reading { let level: Float; let date: Date }
     @Published private(set) var meters: [Track: Reading] = [:]
+    @Published private(set) var transcriptionStatus = ""
+    @Published var mode = TranscriptionMode.local
+    @Published var azureResource = UserDefaults.standard.string(forKey: "azureSpeechResource") ?? ""
+    @Published var azureKey = ""
+    @Published private(set) var transcriptFile: URL?
+    var configured: Bool {
+        mode == .local || (azureResource.range(of: #"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"#, options: .regularExpression) != nil && !azureKey.isEmpty)
+    }
+    private let transcriber = Transcription()
+    @Published private(set) var permissionIssue: CapturePermission?
+    private var prompted = Set<CapturePermission>()
+    private let checkPermission: () async -> CapturePermission?
+    private let requestPermission: (CapturePermission) -> Void
+    private let availableDisplay: () async throws -> SCDisplay
+
+    init(checkPermission: @escaping () async -> CapturePermission? = CapturePermission.missing,
+         requestPermission: @escaping (CapturePermission) -> Void = { $0.request() },
+         availableDisplay: @escaping () async throws -> SCDisplay = Capture.availableDisplay) {
+        self.checkPermission = checkPermission
+        self.requestPermission = requestPermission
+        self.availableDisplay = availableDisplay
+    }
+
+    private var quitting = false
     private var capture: Capture?
     private var transition: Task<Void, Never>?
     private var stopRequested = false
 
     func start() {
         guard phase == .ready else { return }
-        phase = .starting
+        phase = .checking
+        permissionIssue = nil
         message = nil
         meters = [:]
         stopRequested = false
         transition = Task {
             do {
-                let display = try await Capture.displayWithPermissions()
-                if stopRequested { phase = .ready; return }
+                let missing = await checkPermission()
+                guard !Task.isCancelled else { return }
+                if let missing {
+                    permissionIssue = missing
+                    phase = .ready
+                    if prompted.insert(missing).inserted { requestPermission(missing) }
+                    return
+                }
+                let display = try await availableDisplay()
+                guard !Task.isCancelled else { return }
+                phase = .starting
                 let music = try FileManager.default.url(for: .musicDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
                 let stamp = DateFormatter()
                 stamp.dateFormat = "yyyy-MM-dd HH.mm.ss"
@@ -38,9 +73,11 @@ final class Recorder: ObservableObject {
                 phase = .recording
                 if stopRequested { await finish() }
             } catch {
-                let reason = error.localizedDescription
-                if capture != nil { await finish() }
-                message = reason
+                guard !Task.isCancelled else { return }
+                let issue = CapturePermission.from(error)
+                if capture != nil { await finish(transcribe: false) }
+                permissionIssue = issue
+                message = issue == nil ? error.localizedDescription : nil
                 phase = .ready
                 started = nil
             }
@@ -48,25 +85,74 @@ final class Recorder: ObservableObject {
     }
 
     func stop() {
+        if phase == .checking {
+            // ScreenCaptureKit may return after the person has cancelled or quit.
+            // Drop this attempt immediately and ignore its eventual result.
+            transition?.cancel()
+            transition = nil
+            phase = .ready
+            return
+        }
         if phase == .starting { stopRequested = true; return }
         guard phase == .recording else { return }
         phase = .stopping
         transition = Task { await finish() }
     }
 
-    private func finish() async {
+    private func finish(transcribe: Bool = true) async {
         phase = .stopping
         if let capture {
             message = await capture.stop()
             if FileManager.default.fileExists(atPath: capture.folder.path) { lastFolder = capture.folder }
         }
+        let folder = capture?.folder
         capture = nil
         meters = [:]
         phase = .ready
         started = nil
+        if transcribe, !quitting, let folder {
+            await writeTranscript(in: folder, recordingNotice: message)
+        }
     }
 
+    private func writeTranscript(in folder: URL, recordingNotice: String? = nil) async {
+        guard !quitting else { phase = .ready; return }
+        phase = .transcribing
+        permissionIssue = nil
+        lastFolder = folder
+        message = recordingNotice
+        transcriptFile = nil
+        transcriptionStatus = mode == .local ? "Klargør lokal transskription …" : "Klargør lyd til Azure …"
+        if mode == .azure { UserDefaults.standard.set(azureResource, forKey: "azureSpeechResource") }
+        do {
+            try await transcriber.run(folder: folder, mode: mode, resource: azureResource, key: azureKey) {
+                self.transcriptionStatus = $0
+            }
+            transcriptFile = folder.appendingPathComponent(mode.filename)
+        } catch { message = [recordingNotice, error.localizedDescription].compactMap { $0 }.joined(separator: "\n") }
+        phase = .ready
+    }
+
+    func selectRecording() {
+        guard phase == .ready else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.prompt = "Transskriber"
+        panel.message = "Vælg mødemappen med Mikrofon.wav og Systemlyd.wav."
+        panel.directoryURL = lastFolder?.deletingLastPathComponent() ?? FileManager.default
+            .urls(for: .musicDirectory, in: .userDomainMask).first?.appendingPathComponent("Meeting Recorder")
+        if panel.runModal() == .OK, let folder = panel.url {
+            phase = .transcribing
+            transition = Task { await writeTranscript(in: folder) }
+        }
+    }
+
+    func cancelTranscription() { transcriber.cancel() }
+
     func prepareToQuit() async {
+        quitting = true
+        cancelTranscription()
         stop()
         await transition?.value
     }
@@ -131,6 +217,37 @@ struct RecorderView: View {
                 }
             }
             Divider()
+            if phase == .ready {
+                Picker("Transskription", selection: $recorder.mode) {
+                    ForEach(TranscriptionMode.allCases, id: \.self) { mode in Text(mode.rawValue).tag(mode) }
+                }.pickerStyle(.segmented)
+                if recorder.mode == .azure {
+                    TextField("Azure Speech-ressourcens navn", text: $recorder.azureResource)
+                    SecureField("Azure Speech-nøgle", text: $recorder.azureKey)
+                    Text("Begge lydspor sendes til din Azure-ressource. Azure kan opkræve betaling. Nøglen bruges kun, mens appen er åben.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            if phase == .transcribing {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text(recorder.transcriptionStatus).lineLimit(2)
+                    Spacer()
+                    Button("Annuller") { recorder.cancelTranscription() }
+                }
+            }
+            if let issue = recorder.permissionIssue {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Meeting Recorder mangler adgang til " + issue.title.lowercased(), systemImage: "lock")
+                    Text("Tillad denne kopi i Systemindstillinger, og tryk Start igen. Er adgangen allerede slået til, så afslut appen med ⌘Q og åbn den igen fra Programmer.")
+                    Text(Bundle.main.bundleURL.path).font(.caption).textSelection(.enabled)
+                    HStack {
+                        Button("Åbn indstillinger") { NSWorkspace.shared.open(issue.settings) }
+                        Button("Vis app i Finder") { NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL]) }
+                    }
+                }
+                .fixedSize(horizontal: false, vertical: true)
+            }
             if let message = recorder.message {
                 Label(message, systemImage: "exclamationmark.triangle").textSelection(.enabled)
             }
@@ -138,14 +255,24 @@ struct RecorderView: View {
                 Button {
                     if phase == .ready { recorder.start() } else { recorder.stop() }
                 } label: {
-                    Label(phase == .recording || phase == .stopping ? "Stop optagelse" : "Start optagelse",
-                          systemImage: phase == .recording || phase == .stopping ? "stop.fill" : "record.circle")
+                    Label(phase == .checking ? "Annuller" : (phase == .recording || phase == .stopping ? "Stop optagelse" : "Start optagelse"),
+                          systemImage: phase == .checking ? "xmark" : (phase == .recording || phase == .stopping ? "stop.fill" : "record.circle"))
                 }
                 .buttonStyle(.borderedProminent).controlSize(.large)
-                .disabled(phase == .starting || phase == .stopping)
+                .disabled((phase != .ready && phase != .recording && phase != .checking) || (phase == .ready && !recorder.configured))
                 Spacer()
                 if let folder = recorder.lastFolder {
                     Button("Vis seneste optagelse") { NSWorkspace.shared.open(folder) }
+                }
+            }
+            if phase == .ready {
+                HStack {
+                    Button("Transskriber tidligere optagelse…") { recorder.selectRecording() }.disabled(!recorder.configured)
+                    Spacer()
+                    if let file = recorder.transcriptFile,
+                       FileManager.default.fileExists(atPath: file.path) {
+                        Button("Åbn transskription") { NSWorkspace.shared.open(file) }
+                    }
                 }
             }
         }
@@ -154,13 +281,16 @@ struct RecorderView: View {
     private var status: String {
         switch recorder.phase {
         case .ready: return "Klar til optagelse"
+        case .checking: return "Kontrollerer adgang…"
         case .starting: return "Starter optagelse…"
         case .recording: return "Optager"
         case .stopping: return "Gemmer optagelse…"
+        case .transcribing: return "Transskriberer"
         }
     }
 }
 
+#if !PERMISSION_TEST
 @main
 struct MeetingRecorderApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
@@ -170,3 +300,4 @@ struct MeetingRecorderApp: App {
         }.windowResizability(.contentSize)
     }
 }
+#endif

@@ -31,7 +31,13 @@ pub fn turns(
     let _ = events.send_blocking(Event::Stage("Finding speakers".into()));
     let _ = events.send_blocking(Event::Progress(0.0));
     let mut model = crate::nemotron::Model::load(&path)?;
-    let probs = model.probabilities(samples, events, abort)?;
+    let probs = model.probabilities(samples, |value| {
+        if abort.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(crate::transcribe::CANCELLED.into());
+        }
+        let _ = events.send_blocking(Event::Progress(value));
+        Ok(())
+    })?;
     let raw = segments(&probs, 8);
     let raw = match speakers {
         Some(n) => keep_largest(raw, n),

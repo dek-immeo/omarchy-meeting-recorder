@@ -1,0 +1,10 @@
+Speech recognition uses Parakeet Ultra by Moondream, based on NVIDIA Parakeet v3.
+The Q4_K_M conversion is by Handy. The weights are available under CC BY 4.0.
+https://huggingface.co/moondream/parakeet-ultra
+https://huggingface.co/handy-computer/parakeet-ultra-gguf
+https://creativecommons.org/licenses/by/4.0/
+
+Speaker diarization uses NVIDIA Nemotron 3 Diarization. The ONNX conversion is
+from onnx-community. The source model is available under OpenMDW 1.1.
+https://huggingface.co/nvidia/Nemotron-3-Diarization
+https://huggingface.co/onnx-community/Nemotron-3-Diarization-ONNX
