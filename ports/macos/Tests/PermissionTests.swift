@@ -14,6 +14,37 @@ enum PermissionTests {
 
     @MainActor
     static func main() async throws {
+        let settings = Recorder()
+        settings.liveEnabled = true
+        settings.speechEndpoint = "https://example.cognitiveservices.azure.com/"
+        settings.speechLanguage = "da-DK"
+        for live in TranscriptionMode.allCases {
+            for final in TranscriptionMode.allCases {
+                settings.liveProvider = live
+                settings.mode = final
+                settings.azureKey = ""
+                precondition(settings.configured == (final == .local))
+                precondition(settings.recordingConfigured == (live == .local && final == .local))
+                settings.azureKey = "test-key"
+                precondition(settings.configured && settings.recordingConfigured)
+                precondition(settings.usesAzureLive == (live == .azure))
+            }
+        }
+        precondition(settings.batchResource == "example")
+        settings.speechEndpoint = "example"
+        precondition(settings.liveSettings?.endpoint.hasPrefix("wss://example.cognitiveservices.azure.com/stt/") == true)
+        settings.speechEndpoint = "https://westeurope.api.cognitive.microsoft.com/"
+        settings.regionalResource = ""
+        precondition(settings.liveSettings != nil && !settings.configured)
+        settings.regionalResource = "example"
+        precondition(settings.batchResource == "example" && settings.recordingConfigured)
+        settings.speechLanguage = "invalid"
+        precondition(!settings.recordingConfigured && settings.configured)
+        settings.liveEnabled = false
+        precondition(settings.recordingConfigured)
+        settings.speechEndpoint = "https://example.org/"
+        precondition(!settings.configured && settings.liveSettings == nil)
+
         var missing: CapturePermission? = .microphone
         var requested: [CapturePermission] = []
         var queries = 0

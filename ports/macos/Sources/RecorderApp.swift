@@ -24,15 +24,21 @@ final class Recorder: ObservableObject {
     }
     @Published private(set) var transcriptionStatus = ""
     @Published var mode = TranscriptionMode.local
-    @Published var azureResource = UserDefaults.standard.string(forKey: "azureSpeechResource") ?? ""
+    @Published var regionalResource = UserDefaults.standard.string(forKey: "azureSpeechResource") ?? ""
     @Published var azureKey = ""
     @Published private(set) var transcriptFile: URL?
+    var speechAddress: AzureSpeechAddress? { AzureSpeechAddress(speechEndpoint) }
+    var batchResource: String? {
+        guard let address = speechAddress else { return nil }
+        return address.resource ?? AzureSpeechAddress.resourceName(regionalResource)
+    }
     var configured: Bool {
-        mode == .local || (azureResource.range(of: #"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"#, options: .regularExpression) != nil && !azureKey.isEmpty)
+        mode == .local || (batchResource != nil && !azureKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
     let live = LiveTranscript()
-    @Published var liveProvider = LiveProvider.local
-    @Published var speechEndpoint = UserDefaults.standard.string(forKey: "azureLiveEndpoint") ?? ""
+    @Published var liveProvider = TranscriptionMode.local
+    @Published var speechEndpoint = UserDefaults.standard.string(forKey: "azureLiveEndpoint")
+        ?? UserDefaults.standard.string(forKey: "azureSpeechResource") ?? ""
     @Published var speechLanguage = UserDefaults.standard.string(forKey: "azureLiveLanguage") ?? "da-DK"
     var usesAzureLive: Bool { liveEnabled && liveProvider == .azure }
     var liveSettings: AzureLiveSettings? {
@@ -174,9 +180,12 @@ final class Recorder: ObservableObject {
         message = recordingNotice
         transcriptFile = nil
         transcriptionStatus = mode == .local ? "Klargør lokal transskription …" : "Klargør lyd til Azure …"
-        if mode == .azure { UserDefaults.standard.set(azureResource, forKey: "azureSpeechResource") }
+        if mode == .azure, let resource = batchResource {
+            UserDefaults.standard.set(speechEndpoint, forKey: "azureLiveEndpoint")
+            UserDefaults.standard.set(resource, forKey: "azureSpeechResource")
+        }
         do {
-            try await transcriber.run(folder: folder, mode: mode, resource: azureResource, key: azureKey) {
+            try await transcriber.run(folder: folder, mode: mode, resource: batchResource ?? "", key: azureKey.trimmingCharacters(in: .whitespacesAndNewlines)) {
                 self.transcriptionStatus = $0
             }
             transcriptFile = folder.appendingPathComponent(mode.filename)
@@ -334,10 +343,6 @@ struct RecorderView: View {
         }
         if recorder.phase == .ready {
             settings
-            if recorder.mode == .azure {
-                Text("Lydsporene sendes til din Azure-ressource. Azure kan opkræve betaling. Nøglen bruges kun, mens appen er åben.")
-                    .font(.callout).foregroundStyle(.secondary)
-            }
             HStack {
                 Button { openMeeting() } label: { Label("Åbn møde…", systemImage: "folder") }
                 Spacer()
@@ -421,7 +426,7 @@ struct RecorderView: View {
                     Image(systemName: "slider.horizontal.3")
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Indstillinger").font(.headline)
-                        Text(recorder.mode.rawValue).font(.callout).foregroundStyle(.secondary)
+                        Text("Live: \(recorder.liveEnabled ? recorder.liveProvider.rawValue : "Fra") · Efter: \(recorder.mode.rawValue)").font(.callout).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Image(systemName: settingsOpen ? "chevron.up" : "chevron.down").foregroundStyle(.secondary)
@@ -432,31 +437,41 @@ struct RecorderView: View {
                 Toggle("Vis live-transskription", isOn: $recorder.liveEnabled)
                 if recorder.liveEnabled {
                     Picker("Under mødet", selection: $recorder.liveProvider) {
-                        ForEach(LiveProvider.allCases, id: \.self) { provider in Text(provider.rawValue).tag(provider) }
+                        ForEach(TranscriptionMode.allCases, id: \.self) { provider in Text(provider.rawValue).tag(provider) }
                     }.pickerStyle(.segmented)
-                }
-                if recorder.usesAzureLive {
-                    TextField("Azure Speech-endpoint (https://…)", text: $recorder.speechEndpoint)
-                    TextField("Talesprog, fx da-DK", text: $recorder.speechLanguage)
-                    Text("Mikrofon og systemlyd streames til Azure som to forbindelser under mødet. Azure kan opkræve betaling for begge.")
-                        .font(.callout).foregroundStyle(.secondary)
                 }
                 Picker("Efter mødet", selection: $recorder.mode) {
                     ForEach(TranscriptionMode.allCases, id: \.self) { mode in Text(mode.rawValue).tag(mode) }
                 }.pickerStyle(.segmented)
-                if recorder.mode == .azure {
-                    TextField("Azure Speech-ressourcens navn", text: $recorder.azureResource)
-                }
-                if recorder.usesAzureLive || recorder.mode == .azure {
-                    SecureField("Azure Speech-nøgle", text: $recorder.azureKey)
-                }
-                if recorder.usesAzureLive && !recorder.speechEndpoint.isEmpty && !recorder.azureKey.isEmpty && recorder.liveSettings == nil {
-                    Text("Kontrollér Speech-endpointet fra Azure-portalen og talesproget (fx da-DK).").font(.callout)
-                }
+                if recorder.usesAzureLive || recorder.mode == .azure { azureSettings }
                 Button("Transskriber tidligere optagelse…") { recorder.selectRecording() }
                     .disabled(!recorder.configured)
             }
         }.padding(16).recorderCard(palette)
+    }
+
+    private var azureSettings: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            Text("Azure Speech").font(.headline)
+            TextField("Ressourcenavn eller endpoint", text: $recorder.speechEndpoint)
+            if recorder.mode == .azure, let address = recorder.speechAddress, address.resource == nil {
+                TextField("Ressourcenavn til transskription efter mødet", text: $recorder.regionalResource)
+                Text("Det regionale endpoint angiver kun en region. Efter mødet bruges ressourcens navn.")
+                    .font(.caption)
+            }
+            SecureField("API-nøgle", text: $recorder.azureKey)
+            if recorder.usesAzureLive {
+                TextField("Talesprog til live-tekst, fx da-DK", text: $recorder.speechLanguage)
+            }
+            if !recorder.speechEndpoint.isEmpty && recorder.speechAddress == nil {
+                Text("Angiv et ressourcenavn eller et gyldigt Azure Speech-endpoint.").font(.caption)
+            } else if recorder.usesAzureLive && !recorder.azureKey.isEmpty && recorder.speechAddress != nil && recorder.liveSettings == nil {
+                Text("Kontrollér API-nøglen og talesproget (fx da-DK).").font(.caption)
+            }
+            Text("Azure kan opkræve betaling for hvert lydspor i de valgte trin. Nøglen bruges kun, mens appen er åben.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
     }
 
     private var processingPanel: some View {

@@ -156,11 +156,11 @@ struct MeetingReview: View {
                     if variants.count > 1 {
                         Picker("Transskription", selection: $variant) {
                             ForEach(variants, id: \.self) { file in
-                                Text(file == TranscriptionMode.azure.filename ? "Azure" : "Lokal").tag(file)
+                                Text(file == TranscriptionMode.azure.filename ? TranscriptionMode.azure.rawValue : "Lokal").tag(file)
                             }
                         }.labelsHidden().pickerStyle(.menu)
                     } else {
-                        Text(variant == TranscriptionMode.azure.filename ? "Azure" : "Lokal")
+                        Text(variant == TranscriptionMode.azure.filename ? TranscriptionMode.azure.rawValue : "Lokal")
                     }
                 }
             }
@@ -188,11 +188,11 @@ struct MeetingReview: View {
             if variants.count > 1 {
                 Picker("Transskription", selection: $variant) {
                     ForEach(variants, id: \.self) { file in
-                        Text(file == TranscriptionMode.azure.filename ? "Azure" : "Lokal").tag(file)
+                        Text(file == TranscriptionMode.azure.filename ? TranscriptionMode.azure.rawValue : "Lokal").tag(file)
                     }
                 }
             } else if let file = variants.first {
-                Text(file == TranscriptionMode.azure.filename ? "Transskription · Azure" : "Transskription · Lokal")
+                Text(file == TranscriptionMode.azure.filename ? "Transskription · Azure Speech" : "Transskription · Lokal")
             }
             if !speakers.isEmpty {
                 Picker("Talere", selection: $selectedSpeaker) {

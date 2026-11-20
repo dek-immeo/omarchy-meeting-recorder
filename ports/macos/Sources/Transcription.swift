@@ -2,7 +2,7 @@ import Foundation
 
 enum TranscriptionMode: String, CaseIterable {
     case local = "På denne Mac"
-    case azure = "Azure Foundry"
+    case azure = "Azure Speech"
     var filename: String { self == .local ? "Transskription.md" : "Transskription-Azure.md" }
 }
 
