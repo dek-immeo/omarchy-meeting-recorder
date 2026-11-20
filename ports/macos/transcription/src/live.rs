@@ -12,7 +12,7 @@ use transcribe_cpp::{Model, RunOptions, TimestampKind};
 const STEP: u64 = 4;
 const CONTEXT: u64 = 1;
 
-struct TrackReader {
+pub(super) struct TrackReader {
     file: File,
     spec: hound::WavSpec,
     data_offset: u64,
@@ -20,7 +20,7 @@ struct TrackReader {
 }
 
 impl TrackReader {
-    fn open(path: &Path) -> Result<Self> {
+    pub(super) fn open(path: &Path) -> Result<Self> {
         let mut file = BufReader::new(File::open(path)?);
         hound::read_wave_header(&mut file)?;
         let mut spec = None;
@@ -68,6 +68,20 @@ impl TrackReader {
         if written < end || self.file.metadata()?.len() < self.data_offset + end * stride {
             return Ok(None);
         }
+        Ok(Some(self.read(first, end)?))
+    }
+
+    pub(super) fn rate(&self) -> u64 {
+        u64::from(self.spec.sample_rate)
+    }
+
+    pub(super) fn available(&self, written: u64) -> Result<u64> {
+        let stride = u64::from(self.spec.channels) * 2;
+        Ok(written.min(self.file.metadata()?.len().saturating_sub(self.data_offset) / stride))
+    }
+
+    pub(super) fn read(&mut self, first: u64, end: u64) -> Result<Vec<f32>> {
+        let stride = u64::from(self.spec.channels) * 2;
         self.file
             .seek(SeekFrom::Start(self.data_offset + first * stride))?;
         let mut bytes = vec![0; ((end - first) * stride) as usize];
@@ -75,11 +89,7 @@ impl TrackReader {
         let samples = bytes
             .chunks_exact(2)
             .map(|v| Ok(i16::from_le_bytes([v[0], v[1]])));
-        Ok(Some(audio::resample(
-            self.spec,
-            (end - first) as usize,
-            samples,
-        )?))
+        audio::resample(self.spec, (end - first) as usize, samples)
     }
 }
 

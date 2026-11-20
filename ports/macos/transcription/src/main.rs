@@ -1,5 +1,6 @@
 mod audio;
 mod azure;
+mod azure_live;
 #[path = "../../../../src/nemotron/inference.rs"]
 mod inference;
 mod live;
@@ -170,6 +171,7 @@ fn save(
 fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     let result = match args.as_slice() {
+        [mode, folder] if mode == "--azure-live" => azure_live::run(Path::new(folder)),
         [mode, folder, cache] if mode == "--live" => live::run(Path::new(folder), Path::new(cache)),
         [folder, cache] => transcript(Path::new(folder), Path::new(cache)),
         [mode, folder, scratch, resource] if mode == "--azure" => azure::run(
@@ -180,7 +182,10 @@ fn main() {
         _ => std::process::exit(2),
     };
     if let Err(error) = result {
-        if args.first().is_some_and(|mode| mode == "--live") {
+        if args
+            .first()
+            .is_some_and(|mode| mode == "--live" || mode == "--azure-live")
+        {
             println!("LIVE_ERROR {error}");
         } else {
             eprintln!("Transskriptionen blev afbrudt: {error}");

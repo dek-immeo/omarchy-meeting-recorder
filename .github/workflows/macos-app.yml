@@ -10,7 +10,7 @@ permissions:
   contents: read
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -79,6 +79,11 @@ jobs:
           ffmpeg -loglevel error -i bench/fixtures/room/computer.ogg -ar 48000 -ac 2 "$RUNNER_TEMP/system.wav"
           worker="$PWD/dist/macos/Meeting Recorder.app/Contents/Helpers/meeting-transcriber"
           "$RUNNER_TEMP/live-tests" "$worker" "$HOME/Library/Caches/recorder-ci-models" "$RUNNER_TEMP/mic.wav" "$RUNNER_TEMP/system.wav"
+      - name: Verify the bundled Azure Speech SDK streams both sources and resumes
+        run: |
+          python3 -m venv "$RUNNER_TEMP/speech-server"
+          "$RUNNER_TEMP/speech-server/bin/pip" install websockets==16.0
+          "$RUNNER_TEMP/speech-server/bin/python" ports/macos/Tests/azure_live.py "$PWD/dist/macos/Meeting Recorder.app/Contents/Helpers/meeting-transcriber"
       - uses: actions/upload-artifact@v4
         with:
           name: Meeting-Recorder-macOS-arm64

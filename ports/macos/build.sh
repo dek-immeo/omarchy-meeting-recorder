@@ -10,6 +10,7 @@ mkdir -p "$app/Contents/Helpers" "$app/Contents/Frameworks"
 cargo build --manifest-path transcription/Cargo.toml --target aarch64-apple-darwin --release --locked
 cp transcription/target/aarch64-apple-darwin/release/meeting-transcriber "$app/Contents/Helpers/"
 python3 transcription/bundle-runtime.py "$app/Contents"
+python3 azure-live/bundle.py "$app/Contents"
 cp transcription/CREDITS.txt "$app/Contents/Resources/"
 codesign --force --sign - "$app/Contents/Helpers/meeting-transcriber"
 codesign --force --sign - "$app/Contents/Frameworks/libonnxruntime.dylib"

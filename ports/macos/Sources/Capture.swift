@@ -87,10 +87,12 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
-    func setPaused(_ paused: Bool) {
+    @discardableResult
+    func setPaused(_ paused: Bool) -> [Int64] {
         io.sync {
             if paused { clock.pause(at: hostSeconds()) } else { clock.resume(at: hostSeconds()) }
             pendingPeak.removeAll()
+            return [tracks[.microphone]?.frames ?? 0, tracks[.system]?.frames ?? 0]
         }
     }
 

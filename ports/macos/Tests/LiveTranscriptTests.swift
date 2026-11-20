@@ -14,6 +14,15 @@ enum LiveTranscriptTests {
 
     @MainActor
     static func main() async throws {
+        func endpoint(_ input: String) -> String? {
+            AzureLiveSettings(endpoint: input, key: "test", language: "da-DK")?.endpoint
+        }
+        let route = "/speech/recognition/conversation/cognitiveservices/v1"
+        precondition(endpoint("https://westeurope.api.cognitive.microsoft.com/") == "wss://westeurope.stt.speech.microsoft.com" + route)
+        precondition(endpoint("https://sample.cognitiveservices.azure.com/") == "wss://sample.cognitiveservices.azure.com/stt" + route)
+        precondition(endpoint("https://fake.org/") == nil && endpoint("http://sample.cognitiveservices.azure.com/") == nil)
+        precondition(endpoint("https://sample.cognitiveservices.azure.com/?secret=x") == nil)
+        precondition(endpoint("https://user@sample.cognitiveservices.azure.com/") == nil)
         let args = CommandLine.arguments
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)

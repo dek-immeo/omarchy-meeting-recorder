@@ -22,6 +22,14 @@ final class Recorder: ObservableObject {
         mode == .local || (azureResource.range(of: #"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"#, options: .regularExpression) != nil && !azureKey.isEmpty)
     }
     let live = LiveTranscript()
+    @Published var liveProvider = LiveProvider.local
+    @Published var speechEndpoint = UserDefaults.standard.string(forKey: "azureLiveEndpoint") ?? ""
+    @Published var speechLanguage = UserDefaults.standard.string(forKey: "azureLiveLanguage") ?? "da-DK"
+    var usesAzureLive: Bool { liveEnabled && liveProvider == .azure }
+    var liveSettings: AzureLiveSettings? {
+        AzureLiveSettings(endpoint: speechEndpoint, key: azureKey, language: speechLanguage)
+    }
+    var recordingConfigured: Bool { configured && (!usesAzureLive || liveSettings != nil) }
     @Published var liveEnabled = UserDefaults.standard.object(forKey: "liveTranscriptEnabled") as? Bool ?? true {
         didSet { UserDefaults.standard.set(liveEnabled, forKey: "liveTranscriptEnabled") }
     }
@@ -44,9 +52,10 @@ final class Recorder: ObservableObject {
     private var capture: Capture?
     private var transition: Task<Void, Never>?
     private var stopRequested = false
+    private var pausedFrames: [Int64] = [0, 0]
 
     func start() {
-        guard phase == .ready else { return }
+        guard phase == .ready, recordingConfigured else { return }
         phase = .checking
         permissionIssue = nil
         message = nil
@@ -76,7 +85,11 @@ final class Recorder: ObservableObject {
                 if stopRequested {
                     await finish()
                 } else if liveEnabled {
-                    live.start(folder: folder) { await session.writtenFrames() }
+                    if usesAzureLive {
+                        UserDefaults.standard.set(speechEndpoint, forKey: "azureLiveEndpoint")
+                        UserDefaults.standard.set(speechLanguage, forKey: "azureLiveLanguage")
+                    }
+                    live.start(folder: folder, azure: usesAzureLive ? liveSettings : nil) { await session.writtenFrames() }
                 }
             } catch {
                 guard !Task.isCancelled else { return }
@@ -94,7 +107,8 @@ final class Recorder: ObservableObject {
         guard let capture else { return }
         let now = Date()
         if phase == .recording {
-            capture.setPaused(true)
+            pausedFrames = capture.setPaused(true)
+            if usesAzureLive { live.cancel() }
             pausedAt = now
             meters = [:]
             phase = .paused
@@ -103,6 +117,9 @@ final class Recorder: ObservableObject {
             self.started = started.addingTimeInterval(now.timeIntervalSince(pausedAt))
             self.pausedAt = nil
             phase = .recording
+            if usesAzureLive, let settings = liveSettings {
+                live.start(folder: capture.folder, azure: settings, resumeFrom: pausedFrames) { await capture.writtenFrames() }
+            }
         }
     }
 
@@ -266,15 +283,31 @@ struct RecorderView: View {
             }
             Divider()
             if phase == .ready {
-                Toggle("Vis live-transskription på denne Mac", isOn: $recorder.liveEnabled)
+                Toggle("Vis live-transskription", isOn: $recorder.liveEnabled)
+                if recorder.liveEnabled {
+                    Picker("Under mødet", selection: $recorder.liveProvider) {
+                        ForEach(LiveProvider.allCases, id: \.self) { provider in Text(provider.rawValue).tag(provider) }
+                    }.pickerStyle(.segmented)
+                }
+                if recorder.usesAzureLive {
+                    TextField("Azure Speech-endpoint (https://…)", text: $recorder.speechEndpoint)
+                    TextField("Talesprog, fx da-DK", text: $recorder.speechLanguage)
+                    Text("Mikrofon og systemlyd streames til Azure som to forbindelser under mødet. Azure kan opkræve betaling for begge.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
                 Picker("Efter mødet", selection: $recorder.mode) {
                     ForEach(TranscriptionMode.allCases, id: \.self) { mode in Text(mode.rawValue).tag(mode) }
                 }.pickerStyle(.segmented)
                 if recorder.mode == .azure {
                     TextField("Azure Speech-ressourcens navn", text: $recorder.azureResource)
-                    SecureField("Azure Speech-nøgle", text: $recorder.azureKey)
                     Text("Begge lydspor sendes til din Azure-ressource. Azure kan opkræve betaling. Nøglen bruges kun, mens appen er åben.")
                         .font(.callout).foregroundStyle(.secondary)
+                }
+                if recorder.usesAzureLive || recorder.mode == .azure {
+                    SecureField("Azure Speech-nøgle", text: $recorder.azureKey)
+                }
+                if recorder.usesAzureLive && !recorder.speechEndpoint.isEmpty && !recorder.azureKey.isEmpty && recorder.liveSettings == nil {
+                    Text("Kontrollér Speech-endpointet fra Azure-portalen og talesproget (fx da-DK).").font(.callout)
                 }
             }
             if recorder.liveEnabled && (phase == .recording || phase == .paused) {
@@ -311,7 +344,7 @@ struct RecorderView: View {
                           systemImage: phase == .checking ? "xmark" : (phase == .recording || phase == .paused || phase == .stopping ? "stop.fill" : "record.circle"))
                 }
                 .buttonStyle(.borderedProminent).controlSize(.large)
-                .disabled((phase != .ready && phase != .recording && phase != .paused && phase != .checking) || (phase == .ready && !recorder.configured))
+                .disabled((phase != .ready && phase != .recording && phase != .paused && phase != .checking) || (phase == .ready && !recorder.recordingConfigured))
                 if phase == .recording || phase == .paused {
                     Button(phase == .paused ? "Genoptag" : "Pause") { recorder.togglePause() }
                 }
