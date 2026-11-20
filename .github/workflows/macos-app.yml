@@ -36,6 +36,10 @@ jobs:
         run: |
           xcrun swiftc -parse-as-library ports/macos/Sources/AudioTracks.swift ports/macos/Tests/TrackTests.swift -o "$RUNNER_TEMP/track-tests"
           "$RUNNER_TEMP/track-tests"
+      - name: Test meeting review, pause and import
+        run: |
+          xcrun swiftc -swift-version 5 -D PERMISSION_TEST -parse-as-library ports/macos/Sources/*.swift ports/macos/Tests/MeetingWorkflowTests.swift -o "$RUNNER_TEMP/meeting-workflow"
+          "$RUNNER_TEMP/meeting-workflow"
       - name: Verify the distributed bundle launches
         run: |
           cd "$RUNNER_TEMP"

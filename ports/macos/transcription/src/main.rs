@@ -52,13 +52,21 @@ fn speaker(probs: &[f32], start: i64, end: i64) -> Option<usize> {
     None
 }
 
-fn transcript(folder: &Path, cache: &Path) -> Result<()> {
-    let start = std::time::Instant::now();
+fn sources(folder: &Path) -> Result<Vec<&'static str>> {
+    if folder.join("Import.wav").is_file() {
+        return Ok(vec!["Import"]);
+    }
     for file in ["Mikrofon.wav", "Systemlyd.wav"] {
         if !folder.join(file).is_file() {
             return Err(format!("Mødemappen mangler {file}.").into());
         }
     }
+    Ok(vec!["Mikrofon", "Systemlyd"])
+}
+
+fn transcript(folder: &Path, cache: &Path) -> Result<()> {
+    let start = std::time::Instant::now();
+    let sources = sources(folder)?;
     println!("Klargør sprog- og talemodeller …");
     let (asr, diar) = models::prepare(cache)?;
     let model = Model::load(asr)?;
@@ -67,7 +75,7 @@ fn transcript(folder: &Path, cache: &Path) -> Result<()> {
         ..Default::default()
     };
     let mut turns = Vec::new();
-    for source in ["Mikrofon", "Systemlyd"] {
+    for source in sources {
         let mut track: Vec<Turn> = Vec::new();
         let pcm = audio::mono(&folder.join(format!("{source}.wav")))?;
         if !pcm.iter().any(|s| s.abs() > 0.0001) {
@@ -143,10 +151,11 @@ fn save(
             .map_or_else(|| "Ukendt taler".to_owned(), |s| format!("Taler {s}"));
         writeln!(
             file,
-            "**[{:02}:{:02}:{:02}] {} · {}**  \n{}\n",
+            "**[{:02}:{:02}:{:02}.{:03}] {} · {}**  \n{}\n",
             total / 3600,
             total / 60 % 60,
             total % 60,
+            t.start.max(0) % 1000,
             t.source,
             label,
             t.text

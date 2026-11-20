@@ -15,6 +15,7 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
     private var pendingPeak: [Track: Float] = [:]
     private var failure: Error?
     private var finishing = false
+    private var clock = RecordingClock()
     private let meter: (Track, Float) -> Void
     private let interrupted: () -> Void
 
@@ -77,9 +78,16 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
         streamStarted = true
     }
 
+    func setPaused(_ paused: Bool) {
+        io.sync {
+            if paused { clock.pause(at: hostSeconds()) } else { clock.resume(at: hostSeconds()) }
+            pendingPeak.removeAll()
+        }
+    }
+
     // Called on io.
     private func write(_ pcm: AVAudioPCMBuffer, to source: Track, at time: Double) {
-        guard failure == nil, !finishing, let track = tracks[source] else { return }
+        guard failure == nil, !finishing, let track = tracks[source], let time = clock.sampleTime(time) else { return }
         do {
             let peak = try track.append(pcm, at: time)
             pendingPeak[source] = max(peak, pendingPeak[source] ?? 0)
@@ -132,7 +140,7 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
             for source in Track.allCases {
                 guard let track = tracks[source] else { continue }
                 if !track.hasSamples { problems.append("\(source.filename) modtog ingen lyddata.") }
-                do { try track.finish(at: end) } catch { problems.append(error.localizedDescription) }
+                do { try track.finish(at: clock.endTime(end)) } catch { problems.append(error.localizedDescription) }
             }
             tracks.removeAll()
             return problems.isEmpty ? nil : problems.joined(separator: "\n")
