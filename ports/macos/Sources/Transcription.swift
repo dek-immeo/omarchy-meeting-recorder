@@ -6,6 +6,25 @@ enum TranscriptionMode: String, CaseIterable {
     var filename: String { self == .local ? "Transskription.md" : "Transskription-Azure.md" }
 }
 
+enum TranscriptionWorker {
+    static var contents: URL { Bundle.main.bundleURL.appendingPathComponent("Contents") }
+
+    static func modelCache() throws -> URL {
+        let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                                  appropriateFor: nil, create: true)
+        return support.appendingPathComponent("Meeting Recorder/Models")
+    }
+
+    static func process() -> Process {
+        let child = Process()
+        child.executableURL = contents.appendingPathComponent("Helpers/meeting-transcriber")
+        var env = ProcessInfo.processInfo.environment
+        env["ORT_DYLIB_PATH"] = contents.appendingPathComponent("Frameworks/libonnxruntime.dylib").path
+        child.environment = env
+        return child
+    }
+}
+
 @MainActor
 final class Transcription {
     private var process: Process?
@@ -16,10 +35,7 @@ final class Transcription {
 
     func run(folder: URL, mode: TranscriptionMode, resource: String, key: String, status: (String) -> Void) async throws {
         let files = FileManager.default
-        let support = try files.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-        let contents = Bundle.main.bundleURL.appendingPathComponent("Contents")
-        let child = Process()
-        child.executableURL = contents.appendingPathComponent("Helpers/meeting-transcriber")
+        let child = TranscriptionWorker.process()
         let scratch = files.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let secret = Pipe()
         if mode == .azure {
@@ -27,12 +43,9 @@ final class Transcription {
             child.arguments = ["--azure", folder.path, scratch.path, resource]
             child.standardInput = secret
         } else {
-            child.arguments = [folder.path, support.appendingPathComponent("Meeting Recorder/Models").path]
+            child.arguments = [folder.path, try TranscriptionWorker.modelCache().path]
         }
         defer { if mode == .azure { try? files.removeItem(at: scratch) } }
-        var env = ProcessInfo.processInfo.environment
-        env["ORT_DYLIB_PATH"] = contents.appendingPathComponent("Frameworks/libonnxruntime.dylib").path
-        child.environment = env
         let pipe = Pipe()
         child.standardOutput = pipe
         child.standardError = pipe

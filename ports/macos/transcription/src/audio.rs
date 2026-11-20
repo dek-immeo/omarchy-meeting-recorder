@@ -11,15 +11,21 @@ pub fn mono(path: &Path) -> super::Result<Vec<f32>> {
     {
         return Err("Optagelsen skal være en 16-bit PCM WAV-fil.".into());
     }
+    resample(spec, wav.duration() as usize, wav.samples::<i16>())
+}
+
+pub(super) fn resample(
+    spec: hound::WavSpec,
+    frames: usize,
+    mut samples: impl Iterator<Item = hound::Result<i16>>,
+) -> super::Result<Vec<f32>> {
     let channels = usize::from(spec.channels);
     let rate = spec.sample_rate as usize;
-    let frames = wav.duration() as usize;
     let target_frames = (frames * 16000 + rate / 2) / rate;
     let mut converter = FftFixedInOut::<f32>::new(rate, 16000, 2048, 1)?;
     let delay = converter.output_delay();
     let mut input = converter.input_buffer_allocate(true);
     let mut output = converter.output_buffer_allocate(true);
-    let mut samples = wav.samples::<i16>();
     let mut result = Vec::with_capacity(target_frames + delay + output[0].len());
     while result.len() < target_frames + delay {
         for frame in &mut input[0] {

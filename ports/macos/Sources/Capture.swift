@@ -78,6 +78,15 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
         streamStarted = true
     }
 
+    func writtenFrames() async -> [Int64] {
+        await withCheckedContinuation { continuation in
+            io.async {
+                continuation.resume(returning: [self.tracks[.microphone]?.frames ?? 0,
+                                                self.tracks[.system]?.frames ?? 0])
+            }
+        }
+    }
+
     func setPaused(_ paused: Bool) {
         io.sync {
             if paused { clock.pause(at: hostSeconds()) } else { clock.resume(at: hostSeconds()) }

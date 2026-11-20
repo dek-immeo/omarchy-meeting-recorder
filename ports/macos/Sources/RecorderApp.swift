@@ -21,6 +21,10 @@ final class Recorder: ObservableObject {
     var configured: Bool {
         mode == .local || (azureResource.range(of: #"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"#, options: .regularExpression) != nil && !azureKey.isEmpty)
     }
+    let live = LiveTranscript()
+    @Published var liveEnabled = UserDefaults.standard.object(forKey: "liveTranscriptEnabled") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(liveEnabled, forKey: "liveTranscriptEnabled") }
+    }
     private let transcriber = Transcription()
     @Published private(set) var permissionIssue: CapturePermission?
     private var prompted = Set<CapturePermission>()
@@ -69,7 +73,11 @@ final class Recorder: ObservableObject {
                 started = Date()
                 try await session.start(display: display)
                 phase = .recording
-                if stopRequested { await finish() }
+                if stopRequested {
+                    await finish()
+                } else if liveEnabled {
+                    live.start(folder: folder) { await session.writtenFrames() }
+                }
             } catch {
                 guard !Task.isCancelled else { return }
                 let issue = CapturePermission.from(error)
@@ -115,10 +123,12 @@ final class Recorder: ObservableObject {
 
     private func finish(transcribe: Bool = true) async {
         phase = .stopping
+        live.cancel()
         if let capture {
             message = await capture.stop()
             if FileManager.default.fileExists(atPath: capture.folder.path) { lastFolder = capture.folder }
         }
+        await live.finish()
         let folder = capture?.folder
         capture = nil
         pausedAt = nil
@@ -256,7 +266,8 @@ struct RecorderView: View {
             }
             Divider()
             if phase == .ready {
-                Picker("Transskription", selection: $recorder.mode) {
+                Toggle("Vis live-transskription på denne Mac", isOn: $recorder.liveEnabled)
+                Picker("Efter mødet", selection: $recorder.mode) {
                     ForEach(TranscriptionMode.allCases, id: \.self) { mode in Text(mode.rawValue).tag(mode) }
                 }.pickerStyle(.segmented)
                 if recorder.mode == .azure {
@@ -265,6 +276,9 @@ struct RecorderView: View {
                     Text("Begge lydspor sendes til din Azure-ressource. Azure kan opkræve betaling. Nøglen bruges kun, mens appen er åben.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
+            }
+            if recorder.liveEnabled && (phase == .recording || phase == .paused) {
+                LiveTranscriptView(preview: recorder.live, paused: phase == .paused)
             }
             if phase == .transcribing {
                 HStack {

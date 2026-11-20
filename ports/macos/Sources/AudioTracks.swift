@@ -49,7 +49,7 @@ final class WaveTrack {
     private let format: AVAudioFormat
     private let silence: AVAudioPCMBuffer
     let start: Double
-    private var frames: Int64 = 0
+    private(set) var frames: Int64 = 0
     private(set) var hasSamples = false
 
     init(url: URL, rate: Double, channels: AVAudioChannelCount, start: Double) throws {

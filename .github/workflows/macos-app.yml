@@ -72,6 +72,13 @@ jobs:
           contents="$PWD/dist/macos/Meeting Recorder.app/Contents"
           export ORT_DYLIB_PATH="$contents/Frameworks/libonnxruntime.dylib"
           python3 ports/macos/Tests/transcription.py "$contents/Helpers/meeting-transcriber" "$HOME/Library/Caches/recorder-ci-models"
+      - name: Read live captions while both Mac audio files are still open
+        run: |
+          xcrun swiftc -swift-version 5 -D PERMISSION_TEST -parse-as-library ports/macos/Sources/*.swift ports/macos/Tests/LiveTranscriptTests.swift -o "$RUNNER_TEMP/live-tests"
+          ffmpeg -loglevel error -i bench/fixtures/room/mic.ogg -ar 44100 -ac 1 "$RUNNER_TEMP/mic.wav"
+          ffmpeg -loglevel error -i bench/fixtures/room/computer.ogg -ar 48000 -ac 2 "$RUNNER_TEMP/system.wav"
+          worker="$PWD/dist/macos/Meeting Recorder.app/Contents/Helpers/meeting-transcriber"
+          "$RUNNER_TEMP/live-tests" "$worker" "$HOME/Library/Caches/recorder-ci-models" "$RUNNER_TEMP/mic.wav" "$RUNNER_TEMP/system.wav"
       - uses: actions/upload-artifact@v4
         with:
           name: Meeting-Recorder-macOS-arm64

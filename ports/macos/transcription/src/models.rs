@@ -64,7 +64,7 @@ fn ensure(dir: &Path, repo: &str, name: &str, expected: &str) -> super::Result<P
     Ok(path)
 }
 
-pub fn prepare(dir: &Path) -> super::Result<(PathBuf, PathBuf)> {
+fn lock_cache(dir: &Path) -> super::Result<fs::File> {
     fs::create_dir_all(dir)?;
     let lock = fs::OpenOptions::new()
         .write(true)
@@ -72,12 +72,26 @@ pub fn prepare(dir: &Path) -> super::Result<(PathBuf, PathBuf)> {
         .truncate(false)
         .open(dir.join(".download.lock"))?;
     lock.lock()?;
-    let asr = ensure(
+    Ok(lock)
+}
+
+fn asr(dir: &Path) -> super::Result<PathBuf> {
+    ensure(
         dir,
         ASR,
         "parakeet-ultra-Q4_K_M.gguf",
         "c69b7a5f9071a7afd8a1818ef7ae542c386c4b01ed0cac380c19a99947646bf9",
-    )?;
+    )
+}
+
+pub fn prepare_live(dir: &Path) -> super::Result<PathBuf> {
+    let _lock = lock_cache(dir)?;
+    asr(dir)
+}
+
+pub fn prepare(dir: &Path) -> super::Result<(PathBuf, PathBuf)> {
+    let _lock = lock_cache(dir)?;
+    let asr = asr(dir)?;
     for (name, _, digest) in nemotron::FILES {
         ensure(dir, nemotron::REPO, name, digest)?;
     }
