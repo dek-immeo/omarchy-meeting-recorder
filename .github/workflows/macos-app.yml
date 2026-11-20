@@ -1,0 +1,36 @@
+name: Build Mac app
+on:
+  push:
+    paths:
+      - 'ports/macos/**'
+      - '.github/workflows/macos-app.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and sign the app bundle
+        run: ports/macos/build.sh
+      - name: Test both PCM sources and saved audio
+        run: |
+          xcrun swiftc -parse-as-library ports/macos/Sources/AudioTracks.swift ports/macos/Tests/TrackTests.swift -o "$RUNNER_TEMP/track-tests"
+          "$RUNNER_TEMP/track-tests"
+      - name: Verify the distributed bundle launches
+        run: |
+          cd "$RUNNER_TEMP"
+          ditto -x -k "$GITHUB_WORKSPACE/dist/macos/Meeting-Recorder-macOS-arm64.zip" .
+          codesign --verify --strict 'Meeting Recorder.app'
+          'Meeting Recorder.app/Contents/MacOS/MeetingRecorder' &
+          app_pid=$!
+          sleep 4
+          kill -0 "$app_pid"
+          kill "$app_pid"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Meeting-Recorder-macOS-arm64
+          path: dist/macos/Meeting-Recorder-macOS-arm64.zip
+          if-no-files-found: error
