@@ -23,5 +23,12 @@ with tempfile.TemporaryDirectory() as tmp:
     for track in ["Mikrofon", "Systemlyd"]:
         speakers = {t[2] for t in turns if t[1] == track and len(t[3].split()) >= 4}
         assert len(speakers) >= 2, text
-    assert "office" in text.lower() and "theme" in text.lower(), text
+    def voice(track, phrase):
+        return next(t[2] for t in turns if t[1] == track and phrase in t[3].lower())
+
+    assert voice("Mikrofon", "office") == voice("Mikrofon", "forum"), text
+    assert voice("Mikrofon", "office") != voice("Mikrofon", "potato"), text
+    assert voice("Systemlyd", "newsletter") == voice("Systemlyd", "default theme"), text
+    assert voice("Systemlyd", "newsletter") != voice("Systemlyd", "screenshot"), text
+    assert text.lower().index("screenshot") < text.lower().index("afternoon"), text
     print(text, flush=True)

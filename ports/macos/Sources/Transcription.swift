@@ -1,5 +1,11 @@
 import Foundation
 
+enum TranscriptionMode: String, CaseIterable {
+    case local = "På denne Mac"
+    case azure = "Azure Foundry"
+    var filename: String { self == .local ? "Transskription.md" : "Transskription-Azure.md" }
+}
+
 @MainActor
 final class Transcription {
     private var process: Process?
@@ -8,13 +14,22 @@ final class Transcription {
         if let process, process.isRunning { process.terminate() }
     }
 
-    func run(folder: URL, status: (String) -> Void) async throws {
+    func run(folder: URL, mode: TranscriptionMode, resource: String, key: String, status: (String) -> Void) async throws {
         let files = FileManager.default
         let support = try files.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         let contents = Bundle.main.bundleURL.appendingPathComponent("Contents")
         let child = Process()
         child.executableURL = contents.appendingPathComponent("Helpers/meeting-transcriber")
-        child.arguments = [folder.path, support.appendingPathComponent("Meeting Recorder/Models").path]
+        let scratch = files.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let secret = Pipe()
+        if mode == .azure {
+            try files.createDirectory(at: scratch, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            child.arguments = ["--azure", folder.path, scratch.path, resource]
+            child.standardInput = secret
+        } else {
+            child.arguments = [folder.path, support.appendingPathComponent("Meeting Recorder/Models").path]
+        }
+        defer { if mode == .azure { try? files.removeItem(at: scratch) } }
         var env = ProcessInfo.processInfo.environment
         env["ORT_DYLIB_PATH"] = contents.appendingPathComponent("Frameworks/libonnxruntime.dylib").path
         child.environment = env
@@ -24,8 +39,14 @@ final class Transcription {
         try child.run()
         process = child
         defer {
+            if child.isRunning { child.terminate() }
             process = nil
             try? pipe.fileHandleForReading.close()
+        }
+        if mode == .azure {
+            try secret.fileHandleForReading.close()
+            try secret.fileHandleForWriting.write(contentsOf: Data(key.utf8))
+            try secret.fileHandleForWriting.close()
         }
         try pipe.fileHandleForWriting.close()
         var lastError: String?

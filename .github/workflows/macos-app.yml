@@ -26,6 +26,8 @@ jobs:
           restore-keys: mac-worker-v1-
       - name: Build and sign the app bundle
         run: ports/macos/build.sh
+      - name: Test Azure multipart request and speaker-labelled response
+        run: cargo test --locked --release --target aarch64-apple-darwin --manifest-path ports/macos/transcription/Cargo.toml
       - name: Test both PCM sources and saved audio
         run: |
           xcrun swiftc -parse-as-library ports/macos/Sources/AudioTracks.swift ports/macos/Tests/TrackTests.swift -o "$RUNNER_TEMP/track-tests"

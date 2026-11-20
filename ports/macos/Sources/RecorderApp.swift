@@ -11,6 +11,13 @@ final class Recorder: ObservableObject {
     struct Reading { let level: Float; let date: Date }
     @Published private(set) var meters: [Track: Reading] = [:]
     @Published private(set) var transcriptionStatus = ""
+    @Published var mode = TranscriptionMode.local
+    @Published var azureResource = UserDefaults.standard.string(forKey: "azureSpeechResource") ?? ""
+    @Published var azureKey = ""
+    @Published private(set) var transcriptFile: URL?
+    var configured: Bool {
+        mode == .local || (azureResource.range(of: #"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"#, options: .regularExpression) != nil && !azureKey.isEmpty)
+    }
     private let transcriber = Transcription()
     private var quitting = false
     private var capture: Capture?
@@ -68,19 +75,25 @@ final class Recorder: ObservableObject {
         meters = [:]
         phase = .ready
         started = nil
-        if transcribe, !quitting, let folder, message == nil {
-            await writeTranscript(in: folder)
+        if transcribe, !quitting, let folder {
+            await writeTranscript(in: folder, recordingNotice: message)
         }
     }
 
-    private func writeTranscript(in folder: URL) async {
+    private func writeTranscript(in folder: URL, recordingNotice: String? = nil) async {
+        guard !quitting else { phase = .ready; return }
         phase = .transcribing
         lastFolder = folder
-        message = nil
-        transcriptionStatus = "Klargør lokal transskription …"
+        message = recordingNotice
+        transcriptFile = nil
+        transcriptionStatus = mode == .local ? "Klargør lokal transskription …" : "Klargør lyd til Azure …"
+        if mode == .azure { UserDefaults.standard.set(azureResource, forKey: "azureSpeechResource") }
         do {
-            try await transcriber.run(folder: folder) { self.transcriptionStatus = $0 }
-        } catch { message = error.localizedDescription }
+            try await transcriber.run(folder: folder, mode: mode, resource: azureResource, key: azureKey) {
+                self.transcriptionStatus = $0
+            }
+            transcriptFile = folder.appendingPathComponent(mode.filename)
+        } catch { message = [recordingNotice, error.localizedDescription].compactMap { $0 }.joined(separator: "\n") }
         phase = .ready
     }
 
@@ -168,6 +181,17 @@ struct RecorderView: View {
                 }
             }
             Divider()
+            if phase == .ready {
+                Picker("Transskription", selection: $recorder.mode) {
+                    ForEach(TranscriptionMode.allCases, id: \.self) { mode in Text(mode.rawValue).tag(mode) }
+                }.pickerStyle(.segmented)
+                if recorder.mode == .azure {
+                    TextField("Azure Speech-ressourcens navn", text: $recorder.azureResource)
+                    SecureField("Azure Speech-nøgle", text: $recorder.azureKey)
+                    Text("Begge lydspor sendes til din Azure-ressource. Azure kan opkræve betaling. Nøglen bruges kun, mens appen er åben.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+            }
             if phase == .transcribing {
                 HStack {
                     ProgressView().controlSize(.small)
@@ -187,7 +211,7 @@ struct RecorderView: View {
                           systemImage: phase == .recording || phase == .stopping ? "stop.fill" : "record.circle")
                 }
                 .buttonStyle(.borderedProminent).controlSize(.large)
-                .disabled(phase != .ready && phase != .recording)
+                .disabled((phase != .ready && phase != .recording) || (phase == .ready && !recorder.configured))
                 Spacer()
                 if let folder = recorder.lastFolder {
                     Button("Vis seneste optagelse") { NSWorkspace.shared.open(folder) }
@@ -195,9 +219,9 @@ struct RecorderView: View {
             }
             if phase == .ready {
                 HStack {
-                    Button("Transskriber tidligere optagelse…") { recorder.selectRecording() }
+                    Button("Transskriber tidligere optagelse…") { recorder.selectRecording() }.disabled(!recorder.configured)
                     Spacer()
-                    if let file = recorder.lastFolder?.appendingPathComponent("Transskription.md"),
+                    if let file = recorder.transcriptFile,
                        FileManager.default.fileExists(atPath: file.path) {
                         Button("Åbn transskription") { NSWorkspace.shared.open(file) }
                     }

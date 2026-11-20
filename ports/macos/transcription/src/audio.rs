@@ -5,7 +5,10 @@ use std::path::Path;
 pub fn mono(path: &Path) -> super::Result<Vec<f32>> {
     let mut wav = hound::WavReader::open(path)?;
     let spec = wav.spec();
-    if spec.bits_per_sample != 16 || spec.sample_format != hound::SampleFormat::Int || spec.channels == 0 {
+    if spec.bits_per_sample != 16
+        || spec.sample_format != hound::SampleFormat::Int
+        || spec.channels == 0
+    {
         return Err("Optagelsen skal være en 16-bit PCM WAV-fil.".into());
     }
     let channels = usize::from(spec.channels);
@@ -22,7 +25,9 @@ pub fn mono(path: &Path) -> super::Result<Vec<f32>> {
         for frame in &mut input[0] {
             let mut sum = 0f32;
             for _ in 0..channels {
-                if let Some(sample) = samples.next() { sum += f32::from(sample?); }
+                if let Some(sample) = samples.next() {
+                    sum += f32::from(sample?);
+                }
             }
             *frame = sum / (32768.0 * channels as f32);
         }
