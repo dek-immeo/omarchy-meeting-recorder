@@ -36,6 +36,8 @@ final class Recorder: ObservableObject {
         mode == .local || (batchResource != nil && !azureKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
     let live = LiveTranscript()
+    @Published private(set) var activeFolder: URL?
+    @Published private(set) var previewFolder: URL?
     @Published var liveProvider = TranscriptionMode.local
     @Published var speechEndpoint = UserDefaults.standard.string(forKey: "azureLiveEndpoint")
         ?? UserDefaults.standard.string(forKey: "azureSpeechResource") ?? ""
@@ -71,6 +73,7 @@ final class Recorder: ObservableObject {
 
     func start() {
         guard phase == .ready, recordingConfigured else { return }
+        previewFolder = nil
         phase = .checking
         permissionIssue = nil
         message = nil
@@ -93,6 +96,7 @@ final class Recorder: ObservableObject {
                 let session = Capture(folder: folder, meter: { [weak self] track, peak in
                     Task { @MainActor in self?.receive(peak, from: track) }
                 }, interrupted: { [weak self] in Task { @MainActor in self?.stop() } })
+                activeFolder = folder
                 capture = session
                 started = Date()
                 try await session.start(display: display)
@@ -104,6 +108,7 @@ final class Recorder: ObservableObject {
                         UserDefaults.standard.set(speechEndpoint, forKey: "azureLiveEndpoint")
                         UserDefaults.standard.set(speechLanguage, forKey: "azureLiveLanguage")
                     }
+                    previewFolder = folder
                     live.start(folder: folder, azure: usesAzureLive ? liveSettings : nil) { await session.writtenFrames() }
                 }
             } catch {
@@ -160,9 +165,10 @@ final class Recorder: ObservableObject {
             message = await capture.stop()
             if FileManager.default.fileExists(atPath: capture.folder.path) { lastFolder = capture.folder }
         }
-        await live.finish()
+        await live.finish(keepingLines: previewFolder != nil)
         let folder = capture?.folder
         capture = nil
+        activeFolder = nil
         pausedAt = nil
         meters = [:]
         phase = .ready
@@ -177,6 +183,7 @@ final class Recorder: ObservableObject {
         phase = .transcribing
         permissionIssue = nil
         lastFolder = folder
+        if previewFolder != folder { previewFolder = nil }
         message = recordingNotice
         transcriptFile = nil
         transcriptionStatus = mode == .local ? "Klargør lokal transskription …" : "Klargør lyd til Azure …"
@@ -201,6 +208,7 @@ final class Recorder: ObservableObject {
         guard panel.runModal() == .OK, let file = panel.url else { return }
         message = nil
         permissionIssue = nil
+        previewFolder = nil
         phase = .importing
         transition = Task {
             do {
@@ -303,45 +311,70 @@ struct RecorderView: View {
     @Environment(\.colorScheme) private var scheme
     @Environment(\.openWindow) private var openWindow
     @State private var settingsOpen = false
+    @State private var metersOpen = false
     private var palette: RecorderPalette { RecorderPalette(scheme) }
     private var capturing: Bool { recorder.phase == .recording || recorder.phase == .paused }
     private var processing: Bool { [.stopping, .importing, .transcribing].contains(recorder.phase) }
 
     var body: some View {
         GeometryReader { geometry in
-            let wide = geometry.size.width >= 820 && recorder.phase == .ready
-            let layout = wide ? AnyLayout(HStackLayout(alignment: .top, spacing: 24))
-                              : AnyLayout(VStackLayout(alignment: .leading, spacing: 16))
-            ScrollView {
-                layout {
-                    VStack(alignment: .leading, spacing: 16) {
-                        if processing {
-                            processingPanel
-                        } else {
-                            monitor
-                            controls
-                        }
-                    }.frame(maxWidth: .infinity)
-                    VStack(alignment: .leading, spacing: 16) {
-                        details
-                    }.frame(maxWidth: .infinity)
+            if capturing && recorder.liveEnabled {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text(status).font(.headline)
+                        elapsedTime
+                        Spacer()
+                        Button("Lydniveauer") { metersOpen.toggle() }.buttonStyle(.link)
+                            .popover(isPresented: $metersOpen) { monitor.frame(width: 320).padding(8) }
+                    }
+                    LiveTranscriptView(preview: recorder.live, paused: recorder.phase == .paused)
+                    controls
+                }.padding(16)
+            } else if processing && recorder.previewFolder != nil && !recorder.live.lines.isEmpty {
+                VStack(spacing: 12) {
+                    processingPanel
+                    LiveTranscriptView(preview: recorder.live, paused: false, finished: true)
+                }.padding(16)
+            } else {
+                let wide = geometry.size.width >= 820 && recorder.phase == .ready
+                let layout = wide ? AnyLayout(HStackLayout(alignment: .top, spacing: 24))
+                                  : AnyLayout(VStackLayout(alignment: .leading, spacing: 16))
+                ScrollView {
+                    layout {
+                        VStack(alignment: .leading, spacing: 16) {
+                            if processing {
+                                processingPanel
+                            } else {
+                                monitor
+                                controls
+                            }
+                        }.frame(maxWidth: .infinity)
+                        VStack(alignment: .leading, spacing: 16) {
+                            details
+                        }.frame(maxWidth: .infinity)
+                    }
+                    .padding(geometry.size.width < 420 ? 16 : 24)
+                    .frame(maxWidth: wide ? 1120 : 720)
+                    .frame(maxWidth: .infinity)
                 }
-                .padding(geometry.size.width < 420 ? 16 : 24)
-                .frame(maxWidth: wide ? 1120 : 720)
-                .frame(maxWidth: .infinity)
             }
         }
         .background(palette.canvas)
         .foregroundStyle(palette.ink)
         .tint(palette.accent)
         .frame(minWidth: 360, minHeight: 300)
+        .onChange(of: recorder.transcriptFile) { file in
+            if let file {
+                showReview(MeetingSelection(folder: file.deletingLastPathComponent(), preferred: file.lastPathComponent))
+            }
+        }
     }
 
     @ViewBuilder private var details: some View {
-        if capturing && recorder.liveEnabled {
-            LiveTranscriptView(preview: recorder.live, paused: recorder.phase == .paused)
-        }
         if recorder.phase == .ready {
+            Button { openWindow(id: "meeting-history") } label: {
+                Label("Tidligere møder", systemImage: "clock.arrow.circlepath")
+            }.buttonStyle(.borderless)
             settings
             HStack {
                 Button { openMeeting() } label: { Label("Åbn møde…", systemImage: "folder") }
@@ -373,21 +406,25 @@ struct RecorderView: View {
         openWindow(id: "meeting-review", value: selection)
     }
 
+    @ViewBuilder private var elapsedTime: some View {
+        if let started = recorder.started {
+            TimelineView(.periodic(from: started, by: 1)) { time in
+                let seconds = max(0, Int((recorder.pausedAt ?? time.date).timeIntervalSince(started)))
+                HStack(spacing: 6) {
+                    if recorder.phase == .recording { Circle().fill(.red).frame(width: 7, height: 7) }
+                    Text(String(format: "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60))
+                        .font(.callout.monospacedDigit())
+                }
+            }
+        }
+    }
+
     private var monitor: some View {
         VStack(alignment: .leading, spacing: 15) {
             HStack {
                 Text(status).font(recorderHeading)
                 Spacer()
-                if let started = recorder.started {
-                    TimelineView(.periodic(from: started, by: 1)) { time in
-                        let seconds = max(0, Int((recorder.pausedAt ?? time.date).timeIntervalSince(started)))
-                        HStack(spacing: 6) {
-                            if recorder.phase == .recording { Circle().fill(.red).frame(width: 7, height: 7) }
-                            Text(String(format: "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60))
-                                .font(.callout.monospacedDigit())
-                        }
-                    }
-                }
+                elapsedTime
             }
             TimelineView(.animation(minimumInterval: 0.1, paused: recorder.phase != .recording)) { time in
                 let date = recorder.pausedAt ?? time.date
@@ -530,6 +567,12 @@ struct MeetingRecorderApp: App {
             RecorderView(recorder: delegate.recorder)
         }
         .defaultSize(width: 480, height: 520)
+        .windowResizability(.contentMinSize)
+
+        Window("Tidligere møder", id: "meeting-history") {
+            MeetingHistoryView(recorder: delegate.recorder)
+        }
+        .defaultSize(width: 540, height: 580)
         .windowResizability(.contentMinSize)
 
         WindowGroup("Mødedetaljer", id: "meeting-review", for: MeetingSelection.self) { $selection in

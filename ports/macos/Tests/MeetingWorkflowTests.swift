@@ -74,6 +74,22 @@ enum MeetingWorkflowTests {
         precondition(importedWave.microphone.contains { $0 > 0 } && importedWave.system.isEmpty)
         let lines = TranscriptLine.read("**[00:00:00] Mikrofon · Taler 1**  \nHej\n\n**[00:00:00.152] Systemlyd · Taler 2**  \nJa\npræcis.\n")
         precondition(lines.count == 2 && lines[0].time == 0 && lines[1].time == 0.152 && lines[1].text == "Ja\npræcis.")
+        let history = temp.appendingPathComponent("history")
+        let empty = try PastMeeting.load(from: history)
+        precondition(empty.isEmpty)
+        for (name, files) in [
+            ("2025-01-02 09.00.00 Plan ABCDEF12", ["Transskription.md", "Transskription-Azure.md", "Transskription-Azure-Opsummering.md"]),
+            ("2025-01-01 11.00.00 1234abcd", ["Import.wav"]),
+            ("other", ["unrelated.md"])
+        ] {
+            let meeting = history.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: meeting, withIntermediateDirectories: true)
+            for file in files { try Data().write(to: meeting.appendingPathComponent(file)) }
+        }
+        let past = try PastMeeting.load(from: history)
+        precondition(past.count == 2 && past[0].title == "Plan" && past[0].hasSummary)
+        precondition(past[0].transcript == "Transskription-Azure.md" && past[1].transcript == nil)
+        print("Past meeting discovery, ordering and summary variant verified.")
         print("Pause, resume, WAV timing, two-track playback composition, compressed audio import and transcript timestamps verified.")
     }
 }

@@ -58,9 +58,10 @@ enum LiveTranscriptTests {
         try await wait(preview) { preview.lines.contains { $0.source == "Systemlyd" && $0.text.lowercased().contains("directory") } }
         precondition(preview.lines.map(\.ms) == preview.lines.map(\.ms).sorted())
         precondition(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("Transskription.md").path))
+        let captured = preview.lines
         preview.cancel()
-        await preview.finish()
-        precondition(!worker.isRunning && preview.lines.isEmpty)
+        await preview.finish(keepingLines: true)
+        precondition(!worker.isRunning && preview.lines == captured && preview.partials.isEmpty)
         for track in tracks { try track.finish(at: start + 18) }
 
         let unavailable = Process()

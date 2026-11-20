@@ -1,7 +1,7 @@
 import Darwin
 import SwiftUI
 
-struct LiveLine: Decodable, Identifiable {
+struct LiveLine: Decodable, Identifiable, Equatable {
     let source: String
     let ms: Int64
     let text: String
@@ -44,11 +44,11 @@ final class LiveTranscript: ObservableObject {
         if let child, child.isRunning { child.terminate() }
     }
 
-    func finish() async {
+    func finish(keepingLines: Bool = false) async {
         await task?.value
         task = nil
         partials = [:]
-        lines = []
+        if !keepingLines { lines = [] }
         status = ""
     }
 
@@ -101,9 +101,12 @@ final class LiveTranscript: ObservableObject {
                     let row = try JSONDecoder().decode(LiveLine.self, from: Data(line.dropFirst("LIVE_LINE ".count).utf8))
                     partials[row.source] = nil
                     guard !row.text.isEmpty else { continue }
-                    lines.append(row)
-                    lines.sort { ($0.ms, $0.source) < ($1.ms, $1.source) }
-                    if lines.count > 120 { lines.removeFirst(lines.count - 120) }
+                    if let last = lines.last, (row.ms, row.source) < (last.ms, last.source) {
+                        let previous = lines.lastIndex { ($0.ms, $0.source) <= (row.ms, row.source) }
+                        lines.insert(row, at: previous.map { $0 + 1 } ?? 0)
+                    } else {
+                        lines.append(row)
+                    }
                     status = ""
                 } else if line.hasPrefix("Henter ") {
                     status = line
@@ -121,40 +124,81 @@ final class LiveTranscript: ObservableObject {
     }
 }
 
+// Observe user scrolling on this transcript, independently of programmatic scrollTo.
+private struct TranscriptScrollObserver: NSViewRepresentable {
+    let moved: (Bool) -> Void
+
+    final class Marker: NSView {
+        var moved: ((Bool) -> Void)?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            NotificationCenter.default.removeObserver(self)
+            if window != nil {
+                NotificationCenter.default.addObserver(self, selector: #selector(scrolled(_:)),
+                    name: NSScrollView.didLiveScrollNotification, object: nil)
+            }
+        }
+        @objc private func scrolled(_ event: Notification) {
+            guard let scroll = event.object as? NSScrollView, scroll === enclosingScrollView,
+                  let document = scroll.documentView else { return }
+            moved?(document.bounds.maxY - scroll.documentVisibleRect.maxY < 12)
+        }
+    }
+
+    func makeNSView(context: Context) -> Marker { Marker() }
+    func updateNSView(_ view: Marker, context: Context) { view.moved = moved }
+}
+
 struct LiveTranscriptView: View {
     @ObservedObject var preview: LiveTranscript
     let paused: Bool
+    var finished = false
+    @State private var following = true
+    @Environment(\.colorScheme) private var scheme
+    private var palette: RecorderPalette { RecorderPalette(scheme) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Live-transskription").font(.headline)
-            if !preview.status.isEmpty || paused {
-                Text(paused ? "På pause" : preview.status).font(.callout).foregroundStyle(.secondary)
-            }
-            ScrollViewReader { scroll in
+        ScrollViewReader { scroll in
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text(finished ? "Foreløbig transskription" : "Live-transskription").font(.headline)
+                    Spacer()
+                    if !following {
+                        Button("Til seneste") {
+                            following = true
+                            scroll.scrollTo("bottom", anchor: .bottom)
+                        }.buttonStyle(.link)
+                    }
+                }
+                if paused || !preview.status.isEmpty {
+                    Text(paused ? "På pause" : preview.status).font(.callout).foregroundStyle(.secondary)
+                }
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(preview.lines) { row in
-                            let seconds = Int(row.ms / 1000)
-                            VStack(alignment: .leading) {
-                                Text(String(format: "%02d:%02d", seconds / 60, seconds % 60) + " · " + row.source)
-                                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                                Text(row.text).textSelection(.enabled)
-                            }.id(row.id)
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        ForEach(preview.lines) { row in line(row, partial: false) }
+                        ForEach(preview.partials.values.sorted { ($0.ms, $0.source) < ($1.ms, $1.source) }) { row in
+                            line(row, partial: true)
                         }
-                        ForEach(preview.partials.values.sorted { $0.source < $1.source }) { row in
-                            Text(row.source + " · " + row.text)
-                                .italic().foregroundStyle(.secondary).id("partial-" + row.source)
-                        }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
+                        Color.clear.frame(height: 1).id("bottom")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(TranscriptScrollObserver { following = $0 })
                 }
-                .onChange(of: preview.partials.keys.sorted()) { sources in
-                    if let source = sources.last { scroll.scrollTo("partial-" + source, anchor: .bottom) }
-                }
-                .onChange(of: preview.lines.last?.id) { id in
-                    if let id { scroll.scrollTo(id, anchor: .bottom) }
-                }
-            }.frame(height: 150)
+                .onAppear { if following { scroll.scrollTo("bottom", anchor: .bottom) } }
+                .onChange(of: preview.lines.count) { _ in if following { scroll.scrollTo("bottom", anchor: .bottom) } }
+                .onChange(of: preview.partials) { _ in if following { scroll.scrollTo("bottom", anchor: .bottom) } }
+            }
+        }.padding(14).recorderCard(palette)
+    }
+
+    private func line(_ row: LiveLine, partial: Bool) -> some View {
+        let seconds = row.ms / 1000
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(row.source).font(.caption.bold()).foregroundStyle(row.source == "Mikrofon" ? palette.mic : palette.system)
+                Text(String(format: "%02lld:%02lld", seconds / 60, seconds % 60)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            Text(row.text).italic(partial).foregroundStyle(partial ? .secondary : .primary).textSelection(.enabled)
         }
     }
 }

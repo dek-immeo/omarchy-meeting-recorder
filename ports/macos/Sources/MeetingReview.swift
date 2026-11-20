@@ -60,6 +60,7 @@ private func clockLabel(_ value: Double) -> String {
 
 struct MeetingReview: View {
     let selection: MeetingSelection
+    @State private var currentLineID: Int?
     @State private var player: AVPlayer?
     @State private var duration = 0.0
     @State private var variants: [String] = []
@@ -117,6 +118,7 @@ struct MeetingReview: View {
         .frame(minWidth: 380, minHeight: 360)
         .background(palette.canvas).foregroundStyle(palette.ink).tint(palette.accent)
         .task {
+            showSummary = selection.opensSummary == true
             variants = TranscriptionMode.allCases.map(\.filename).filter {
                 FileManager.default.fileExists(atPath: selection.folder.appendingPathComponent($0).path)
             }
@@ -133,6 +135,7 @@ struct MeetingReview: View {
             } catch { audioError = error.localizedDescription }
         }
         .onChange(of: variant) { name in
+            currentLineID = nil
             selectedSpeaker = nil
             speakers = []
             guard !name.isEmpty else { return }
@@ -243,6 +246,13 @@ struct MeetingReview: View {
                             }
                             Text(line.text).lineSpacing(3).textSelection(.enabled)
                         }
+                        .padding(.leading, 9)
+                        .overlay(alignment: .leading) {
+                            if currentLineID == line.id {
+                                Capsule().fill(palette.accent).frame(width: 3)
+                                    .accessibilityLabel("Aktuel replik")
+                            }
+                        }
                     }
                 }
             }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
@@ -302,6 +312,10 @@ struct MeetingReview: View {
                             .controlSize(.mini).disabled(player == nil).accessibilityLabel("Afspilningsposition")
                     }
                     Text(clockLabel(position) + " / " + clockLabel(duration)).font(.caption.monospacedDigit())
+                }
+                .onChange(of: position) { time in
+                    let id = lines.last(where: { $0.time <= time })?.id
+                    if currentLineID != id { currentLineID = id }
                 }
             }
             if let audioError { Text(audioError).font(.caption).foregroundStyle(.secondary) }

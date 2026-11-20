@@ -3,6 +3,7 @@ import AVFoundation
 struct MeetingSelection: Hashable, Codable {
     let folder: URL
     var preferred: String? = nil
+    var opensSummary: Bool? = nil
 }
 
 enum MeetingFiles {

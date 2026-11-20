@@ -117,10 +117,13 @@ enum MeetingSummary {
         return try await completion(parts[0], task: "Skriv det samlede referat. Dæk hele mødets forløb og afslut med eventuelle aftaler.", budget: 1800)
     }
 
+    static func filename(for transcript: String) -> String {
+        let stem = (transcript as NSString).deletingPathExtension
+        return stem == "Transskription" ? "Opsummering.md" : "\(stem)-Opsummering.md"
+    }
+
     static func saved(for transcript: URL, markdown: String) async throws -> String {
-        let name = transcript.deletingPathExtension().lastPathComponent
-        let target = transcript.deletingLastPathComponent().appendingPathComponent(
-            name == "Transskription" ? "Opsummering.md" : "\(name)-Opsummering.md")
+        let target = transcript.deletingLastPathComponent().appendingPathComponent(filename(for: transcript.lastPathComponent))
         let hash = SHA256.hash(data: Data(markdown.utf8)).map { String(format: "%02x", $0) }.joined()
         let marker = "<!-- meeting-recorder-summary-v1 \(hash) -->\n"
         if FileManager.default.fileExists(atPath: target.path) {

@@ -15,6 +15,10 @@ Testversion 0.4.1 til Apple Silicon med macOS 13 eller nyere. Appen optager den 
 
 Bygget er ad hoc-signeret. Hvis macOS blokerer en downloadet testversion, kan du efter første åbningsforsøg godkende denne app under **Systemindstillinger → Anonymitet & sikkerhed → Åbn alligevel**. [Apples vejledning](https://support.apple.com/da-dk/102445)
 
+Under optagelsen følger livevisningen nye replikker. Rul op for at læse tilbage, og vælg **Til seneste** for at følge med igen. **Lydniveauer** åbner målerne. Når du stopper, bliver de modtagne replikker stående, mens den endelige transskription beregnes. Derefter åbner mødevisningen automatisk.
+
+**Tidligere møder** viser møderne fra den lokale mødemappe, grupperet efter dato. Søg efter titel eller dato. Et møde med et gemt referat åbner på **Opsummering**, og du kan skifte til **Transskription**. Møder med kun lyd kan også åbnes.
+
 Efter en vellykket optagelse starter transskriptionen automatisk. **Åbn transskription** viser mødet i appen. Klik på en tidskode for at høre, hvad der blev sagt, eller søg efter tekst eller talernummer. **Kopiér transskription** kopierer Markdown med tidskoder. **Åbn møde…** genåbner en tidligere Mac-mødemappe uden at køre modellerne igen. Vælg **Indstillinger → Transskriber tidligere optagelse…** for at behandle en optagelse fra den første Mac-version eller prøve igen efter en afbrydelse. En færdig transskription udskiftes først, når det nye resultat er gemt.
 
 Vælg **Opsummering** i det åbne møde for at få et dansk referat af den valgte transskription. Første gang på en Mac skal du køre `ports/macos/setup-summary.sh` med Homebrew installeret. Det henter llama.cpp og Qwen3-4B-Instruct-2507 (ca. 2,5 GB) og kontrollerer modellens SHA-256. På denne Mac skriver modellen referatet uden netværksadgang. Lange møder behandles i dele. Du kan kopiere det færdige referat, som også gemmes i mødemappen og genbruges, når du åbner samme transskription igen. Kontrollér beslutninger, navne og tal mod optagelsen.
