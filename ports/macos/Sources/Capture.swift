@@ -5,6 +5,7 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
     let folder: URL
     private let engine = AVAudioEngine()
     private var stream: SCStream?
+    private var streamStarted = false
     private var tapInstalled = false
     private var routeObserver: NSObjectProtocol?
     private let io = DispatchQueue(label: "meeting-recorder.audio")
@@ -23,16 +24,8 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
         self.interrupted = interrupted
     }
 
-    static func displayWithPermissions() async throws -> SCDisplay {
-        guard await AVCaptureDevice.requestAccess(for: .audio) else {
-            throw RecorderError("Giv Meeting Recorder adgang til mikrofonen i Systemindstillinger → Anonymitet & sikkerhed → Mikrofon.")
-        }
-        let content: SCShareableContent
-        do {
-            content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        } catch {
-            throw RecorderError("Systemlyd kræver adgang til skærm- og systemlydoptagelse. Kontrollér tilladelsen i Systemindstillinger → Anonymitet & sikkerhed, og åbn appen igen.\n\(error.localizedDescription)")
-        }
+    static func availableDisplay() async throws -> SCDisplay {
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let display = content.displays.first else { throw RecorderError("Mac’en har ingen tilgængelig skærm til optagelse af systemlyd.") }
         return display
     }
@@ -81,6 +74,7 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
             self.io.async { self.fail(RecorderError("Mikrofonens konfiguration blev ændret. Optagelsen er stoppet.")) }
         }
         try await capture.startCapture()
+        streamStarted = true
     }
 
     // Called on io.
@@ -128,7 +122,7 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
         // Flush already queued buffers before closing the writers.
         io.sync { finishing = true }
         var stopError: Error?
-        if let capture {
+        if let capture, streamStarted {
             do { try await capture.stopCapture() } catch { stopError = error }
         }
         let streamError = stopError

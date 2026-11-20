@@ -20,3 +20,11 @@ plutil -lint "$app/Contents/Info.plist"
 codesign --force --sign - "$app"
 codesign --verify --strict --verbose=2 "$app"
 ditto -c -k --keepParent "$app" "$out/Meeting-Recorder-macOS-arm64.zip"
+
+# Finder copies the same bundle name from the mounted volume on each update.
+stage="$(mktemp -d)"
+trap 'rm -rf "$stage"' EXIT
+ditto "$app" "$stage/Meeting Recorder.app"
+ln -s /Applications "$stage/Applications"
+hdiutil create -ov -format UDZO -volname "Meeting Recorder" -srcfolder "$stage" "$out/Meeting-Recorder-macOS-arm64.dmg"
+hdiutil verify "$out/Meeting-Recorder-macOS-arm64.dmg"

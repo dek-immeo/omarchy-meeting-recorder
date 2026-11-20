@@ -1,9 +1,10 @@
 import AppKit
 import SwiftUI
+import ScreenCaptureKit
 
 @MainActor
 final class Recorder: ObservableObject {
-    enum Phase { case ready, starting, recording, stopping, transcribing }
+    enum Phase { case ready, checking, starting, recording, stopping, transcribing }
     @Published private(set) var phase = Phase.ready
     @Published private(set) var started: Date?
     @Published private(set) var lastFolder: URL?
@@ -19,6 +20,20 @@ final class Recorder: ObservableObject {
         mode == .local || (azureResource.range(of: #"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"#, options: .regularExpression) != nil && !azureKey.isEmpty)
     }
     private let transcriber = Transcription()
+    @Published private(set) var permissionIssue: CapturePermission?
+    private var prompted = Set<CapturePermission>()
+    private let checkPermission: () async -> CapturePermission?
+    private let requestPermission: (CapturePermission) -> Void
+    private let availableDisplay: () async throws -> SCDisplay
+
+    init(checkPermission: @escaping () async -> CapturePermission? = CapturePermission.missing,
+         requestPermission: @escaping (CapturePermission) -> Void = { $0.request() },
+         availableDisplay: @escaping () async throws -> SCDisplay = Capture.availableDisplay) {
+        self.checkPermission = checkPermission
+        self.requestPermission = requestPermission
+        self.availableDisplay = availableDisplay
+    }
+
     private var quitting = false
     private var capture: Capture?
     private var transition: Task<Void, Never>?
@@ -26,14 +41,24 @@ final class Recorder: ObservableObject {
 
     func start() {
         guard phase == .ready else { return }
-        phase = .starting
+        phase = .checking
+        permissionIssue = nil
         message = nil
         meters = [:]
         stopRequested = false
         transition = Task {
             do {
-                let display = try await Capture.displayWithPermissions()
-                if stopRequested { phase = .ready; return }
+                let missing = await checkPermission()
+                guard !Task.isCancelled else { return }
+                if let missing {
+                    permissionIssue = missing
+                    phase = .ready
+                    if prompted.insert(missing).inserted { requestPermission(missing) }
+                    return
+                }
+                let display = try await availableDisplay()
+                guard !Task.isCancelled else { return }
+                phase = .starting
                 let music = try FileManager.default.url(for: .musicDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
                 let stamp = DateFormatter()
                 stamp.dateFormat = "yyyy-MM-dd HH.mm.ss"
@@ -48,9 +73,11 @@ final class Recorder: ObservableObject {
                 phase = .recording
                 if stopRequested { await finish() }
             } catch {
-                let reason = error.localizedDescription
+                guard !Task.isCancelled else { return }
+                let issue = CapturePermission.from(error)
                 if capture != nil { await finish(transcribe: false) }
-                message = reason
+                permissionIssue = issue
+                message = issue == nil ? error.localizedDescription : nil
                 phase = .ready
                 started = nil
             }
@@ -58,6 +85,14 @@ final class Recorder: ObservableObject {
     }
 
     func stop() {
+        if phase == .checking {
+            // ScreenCaptureKit may return after the person has cancelled or quit.
+            // Drop this attempt immediately and ignore its eventual result.
+            transition?.cancel()
+            transition = nil
+            phase = .ready
+            return
+        }
         if phase == .starting { stopRequested = true; return }
         guard phase == .recording else { return }
         phase = .stopping
@@ -83,6 +118,7 @@ final class Recorder: ObservableObject {
     private func writeTranscript(in folder: URL, recordingNotice: String? = nil) async {
         guard !quitting else { phase = .ready; return }
         phase = .transcribing
+        permissionIssue = nil
         lastFolder = folder
         message = recordingNotice
         transcriptFile = nil
@@ -200,6 +236,18 @@ struct RecorderView: View {
                     Button("Annuller") { recorder.cancelTranscription() }
                 }
             }
+            if let issue = recorder.permissionIssue {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Meeting Recorder mangler adgang til " + issue.title.lowercased(), systemImage: "lock")
+                    Text("Tillad denne kopi i Systemindstillinger, og tryk Start igen. Er adgangen allerede slået til, så afslut appen med ⌘Q og åbn den igen fra Programmer.")
+                    Text(Bundle.main.bundleURL.path).font(.caption).textSelection(.enabled)
+                    HStack {
+                        Button("Åbn indstillinger") { NSWorkspace.shared.open(issue.settings) }
+                        Button("Vis app i Finder") { NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL]) }
+                    }
+                }
+                .fixedSize(horizontal: false, vertical: true)
+            }
             if let message = recorder.message {
                 Label(message, systemImage: "exclamationmark.triangle").textSelection(.enabled)
             }
@@ -207,11 +255,11 @@ struct RecorderView: View {
                 Button {
                     if phase == .ready { recorder.start() } else { recorder.stop() }
                 } label: {
-                    Label(phase == .recording || phase == .stopping ? "Stop optagelse" : "Start optagelse",
-                          systemImage: phase == .recording || phase == .stopping ? "stop.fill" : "record.circle")
+                    Label(phase == .checking ? "Annuller" : (phase == .recording || phase == .stopping ? "Stop optagelse" : "Start optagelse"),
+                          systemImage: phase == .checking ? "xmark" : (phase == .recording || phase == .stopping ? "stop.fill" : "record.circle"))
                 }
                 .buttonStyle(.borderedProminent).controlSize(.large)
-                .disabled((phase != .ready && phase != .recording) || (phase == .ready && !recorder.configured))
+                .disabled((phase != .ready && phase != .recording && phase != .checking) || (phase == .ready && !recorder.configured))
                 Spacer()
                 if let folder = recorder.lastFolder {
                     Button("Vis seneste optagelse") { NSWorkspace.shared.open(folder) }
@@ -233,6 +281,7 @@ struct RecorderView: View {
     private var status: String {
         switch recorder.phase {
         case .ready: return "Klar til optagelse"
+        case .checking: return "Kontrollerer adgang…"
         case .starting: return "Starter optagelse…"
         case .recording: return "Optager"
         case .stopping: return "Gemmer optagelse…"
@@ -241,6 +290,7 @@ struct RecorderView: View {
     }
 }
 
+#if !PERMISSION_TEST
 @main
 struct MeetingRecorderApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
@@ -250,3 +300,4 @@ struct MeetingRecorderApp: App {
         }.windowResizability(.contentSize)
     }
 }
+#endif
