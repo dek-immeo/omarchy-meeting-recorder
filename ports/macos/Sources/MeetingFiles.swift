@@ -1,9 +1,8 @@
 import AVFoundation
 
-struct MeetingSelection: Identifiable {
+struct MeetingSelection: Hashable, Codable {
     let folder: URL
     var preferred: String? = nil
-    var id: URL { folder }
 }
 
 enum MeetingFiles {

@@ -142,9 +142,9 @@ fn css(theme: &Theme) -> String {
             --success-bg-color: {green}; --success-fg-color: {on_green}; --success-color: {green};
             --warning-bg-color: {yellow}; --warning-fg-color: {on_yellow}; --warning-color: {yellow};
         }}
-        .speaker-0 {{ color: {blue}; }} .speaker-1 {{ color: {orange}; }}
-        .speaker-2 {{ color: {green}; }} .speaker-3 {{ color: {magenta}; }}
-        .speaker-4 {{ color: {cyan}; }} .speaker-5 {{ color: {yellow}; }}",
+        .speaker-0 {{ color: mix({blue}, {fg}, 0.24); }} .speaker-1 {{ color: mix({orange}, {fg}, 0.24); }}
+        .speaker-2 {{ color: mix({green}, {fg}, 0.24); }} .speaker-3 {{ color: mix({magenta}, {fg}, 0.24); }}
+        .speaker-4 {{ color: mix({cyan}, {fg}, 0.24); }} .speaker-5 {{ color: mix({yellow}, {fg}, 0.24); }}",
         bg = hex(bg),
         fg = hex(fg),
         dark_bg = hex(dark_bg),

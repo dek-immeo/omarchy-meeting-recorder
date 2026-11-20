@@ -1,0 +1,51 @@
+.session-title {
+    font-family: "Baskervville", Georgia, "DejaVu Serif", serif;
+    font-size: 25px;
+    font-weight: 500;
+}
+.monitor-panel {
+    padding: 20px 22px 12px;
+    border-radius: 20px;
+    background-image: linear-gradient(140deg, alpha(var(--accent-bg-color), 0.13), alpha(var(--accent-bg-color), 0.02));
+    background-color: var(--card-bg-color);
+    border: 1px solid alpha(currentColor, 0.1);
+}
+.monitor-panel separator { background: alpha(currentColor, 0.1); }
+.capture-button { min-height: 44px; padding-top: 0; padding-bottom: 0; }
+.meeting-sidebar { background: alpha(currentColor, 0.035); border-right: 1px solid alpha(currentColor, 0.10); }
+.meeting-sidebar > viewport > box { padding: 18px 14px; }
+.preview-turn { background: var(--card-bg-color); padding: 14px 16px; border-radius: 12px; line-height: 1.4; }
+.turn-text { font-size: 1.05em; line-height: 1.45; }
+.transcript { background: transparent; padding: 12px; }
+.transcript row { padding: 10px 14px; border-radius: 8px; }
+.transcript row:hover { background: alpha(currentColor, 0.06); }
+.transcript row.current { background: alpha(var(--accent-bg-color), 0.25); }
+.transcript row.match { background: alpha(var(--accent-bg-color), 0.14); }
+.transcript row.found { background: alpha(var(--accent-bg-color), 0.36);
+                        box-shadow: inset 3px 0 0 var(--accent-color); }
+.transcript row.chapter { padding-top: 16px; }
+.transcript row.chapter:first-child { padding-top: 7px; }
+.chapter-heading { font-weight: 800; font-size: 1.08em; }
+.speaker-0, .speaker-1, .speaker-2, .speaker-3, .speaker-4, .speaker-5 { font-weight: 700; }
+.speaker-0 { color: mix(#5a9cf0, var(--window-fg-color), 0.38); } .speaker-1 { color: mix(#f08a3a, var(--window-fg-color), 0.38); } .speaker-2 { color: mix(#57c27a, var(--window-fg-color), 0.38); }
+.speaker-3 { color: mix(#d066c8, var(--window-fg-color), 0.38); } .speaker-4 { color: mix(#3fc4cf, var(--window-fg-color), 0.38); } .speaker-5 { color: mix(#d9b53a, var(--window-fg-color), 0.38); }
+.drop-hint { margin: 10px; border: 3px dashed var(--accent-color); border-radius: 14px;
+             background: alpha(var(--window-bg-color), 0.88); color: var(--accent-color); }
+.row-actions { opacity: 0; transition: opacity 120ms; }
+.transcript row:focus-within .row-actions, .transcript row:hover .row-actions, .transcript row.editing .row-actions { opacity: 1; }
+.row-actions button { min-height: 24px; min-width: 24px; padding: 2px; }
+.transcript-editor { background: alpha(currentColor, 0.06); border-radius: 6px; padding: 4px 6px; }
+.transcript-editor text { background: transparent; }
+.done-icon { color: var(--accent-color); padding: 10px; border-radius: 14px; background: alpha(var(--accent-bg-color), 0.12); }
+.player { padding: 6px 14px 6px 6px; }
+.notes { background: var(--window-bg-color); border-left: 1px solid alpha(currentColor, 0.1); }
+.webcam-preview { border-radius: 6px; background: black; margin: 6px 4px 6px 0; }
+.player-video { border-radius: 10px; background: black; }
+.webcam-pip { border-radius: 10px; box-shadow: 0 10px 30px alpha(black, 0.45); }
+.notes-text { font-family: "IBM Plex Mono", "JetBrainsMono Nerd Font", "JetBrains Mono", monospace;
+                     font-size: 21px; line-height: 1.6; background: transparent; caret-color: currentColor; }
+.notes-text text { background: transparent; }
+.notes-footer { font-family: "IBM Plex Mono", "JetBrainsMono Nerd Font", "JetBrains Mono", monospace;
+                       font-size: 11px; color: alpha(currentColor, 0.5); }
+.notes-button { min-height: 26px; min-width: 26px; padding: 2px; color: alpha(currentColor, 0.5); }
+.notes-button:hover { color: currentColor; }

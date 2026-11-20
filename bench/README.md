@@ -61,3 +61,23 @@ A script line is `speaker|gap|text`, where the gap is the seconds after the prev
 ## Licenses
 
 The generated fixtures are CC0. AMI is © the AMI Consortium, [CC BY 4.0](https://groups.inf.ed.ac.uk/ami/corpus/license.shtml); its speaker annotations come from [pyannote/AMI-diarization-setup](https://github.com/pyannote/AMI-diarization-setup). Neither is stored in this repository: `--ami` downloads them to `bench/.cache/`.
+
+## Private meeting benchmark on macOS
+
+Keep one meeting's original M4A, plain-text speaker transcript and Markdown summary together under `localtestdata/`. The local benchmark uses the installed Mac app's transcription helper and cached models. It converts the audio to PCM using Apple's decoder at the original sample rate and channel count. Both the decoder and helper run with network access denied. Models must already be present. Each run writes to a fresh private directory under `localtestdata/.benchmark/`. Git ignores this directory and all source material under `localtestdata/`. The public CI benchmark uses its own fixtures.
+
+```sh
+python3 bench/local_meeting.py
+python3 bench/local_meeting.py --rescore run-EXAMPLE --check
+```
+
+The report measures the word error rate (WER) against the supplied reference, after Unicode normalization, case folding and splitting on punctuation. WER counts substitutions, deletions and insertions, divided by the reference word count. Speaker-attributed WER (cpWER) groups words by speaker and picks the best one-to-one pairing of speaker labels, counting unmatched speakers' words as errors. Lower is better for both. Reference speaker headings may use `Speaker 1` or `Taler 1`. Unlabelled continuation paragraphs belong to the preceding speaker. The external transcript serves as a comparison point. Where the two transcripts disagree, listen to the audio to determine which rendering is faithful.
+
+Two independent conditions determine the result of `--check`.
+
+1. **Regression.** Use `python3 bench/local_meeting.py --rescore run-EXAMPLE --pin-regression` once to save the first working run's edit counts. Future runs on the same three input files must keep both counts at or below those values. The baseline is local. Rescoring uses the saved transcript and does not rerun the models.
+2. **Reference quality.** Compare the candidate transcript with the reference and audio, including material names, numbers and speaker attribution. When a local summary is available, put the candidate output in the run directory as `candidate-summary.md` and rescore. Open the review file named in `report.json`. It includes one item per reference topic, plus factual accuracy, decisions and follow-up items. Mark each item `true` only when the candidate meets or exceeds the reference, or `false` for a material shortfall. Leave unresolved items as `null`. Review decisions are tied to the exact candidate files. Rescore with `--check` after review.
+
+A missing summary or pending review leaves the reference-quality check open. A normal run still reports transcript metrics. Keep generated transcripts, summaries, reviews and worker logs in the ignored directory.
+
+For the private Mac case, `python3 bench/local_meeting.py --rescore run-EXAMPLE --summarize` uses the installed app's on-device summary engine and writes the candidate summary beside the generated transcript. Run `python3 bench/local_review.py run-EXAMPLE` for a local Danish qualitative report. It selects aligned passages from eight parts of the meeting, evaluates them with the offline model, and retains the source excerpts and playback times for listening. Model observations remain separate from the human reference-quality check.

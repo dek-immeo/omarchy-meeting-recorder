@@ -1,6 +1,6 @@
 //! The recorder window. It has one page per phase: recording (which can shrink
-//! to a compact strip with only the waves and the clock), transcribing (the
-//! animation, edge to edge) and done (the transcript and what to do with it).
+//! to a compact strip with only the waves and the clock), transcription progress,
+//! and the finished meeting with its player and transcript.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -331,6 +331,7 @@ struct Recorder {
     compact_action: gio::SimpleAction,
     compact_button: gtk::Button,
     title_row: adw::EntryRow,
+    settings_row: adw::ExpanderRow,
     format_row: adw::ComboRow,
     language_row: adw::ComboRow,
     /// Whether to record the camera next to the audio.
@@ -423,8 +424,6 @@ struct Recorder {
     started_at: Cell<i64>,
     paused: Cell<bool>,
     frozen: [Frozen; 2],
-    /// When the animation came on screen, to keep it there long enough.
-    animation_since: Cell<Option<std::time::Instant>>,
     paused_secs: Cell<i64>,
     pause_began: Cell<i64>,
     pause_button: gtk::Button,
@@ -480,7 +479,12 @@ impl Recorder {
             .action_name("win.find")
             .visible(false)
             .build();
-        header.pack_end(&find_button);
+        let notes_button = gtk::Button::builder()
+            .label("Notes")
+            .tooltip_text("Open or close meeting notes")
+            .css_classes(["flat"])
+            .build();
+        header.pack_end(&notes_button);
         view.add_top_bar(&header);
         // Under the header bar, full width, while the speech model still has
         // to be downloaded.
@@ -498,7 +502,8 @@ impl Recorder {
         let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(18)
-            .margin_top(12)
+            .valign(gtk::Align::Center)
+            .margin_top(20)
             .margin_bottom(24)
             .margin_start(24)
             .margin_end(24)
@@ -572,74 +577,89 @@ impl Recorder {
             }
         });
         group.add(&title_row);
-        group.add(&format_row);
-        group.add(&language_row);
-        group.add(&webcam_row);
-        group.add(&camera_row);
-        content.append(&group);
+        let settings_row = adw::ExpanderRow::builder()
+            .title("Recording settings")
+            .build();
+        settings_row.add_prefix(&gtk::Image::from_icon_name("preferences-system-symbolic"));
+        settings_row.add_row(&format_row);
+        settings_row.add_row(&language_row);
+        settings_row.add_row(&webcam_row);
+        settings_row.add_row(&camera_row);
+        group.add(&settings_row);
 
         let frozen: [Frozen; 2] = Default::default();
         let meters = [
             meter(&mic, ("blue", MIC_COLOR), 56, &frozen[0]),
             meter(&system, ("orange", SYSTEM_COLOR), 56, &frozen[1]),
         ];
-        let meters_box = gtk::Box::builder()
+        let monitor = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(18)
+            .spacing(12)
+            .css_classes(["monitor-panel"])
             .build();
-        meters_box.append(&meter_block("You (microphone)", &meters[0]));
-        meters_box.append(&meter_block("Computer audio", &meters[1]));
-
-        content.append(&meters_box);
-
-        let status_row = gtk::Box::builder()
-            .spacing(10)
-            .halign(gtk::Align::Center)
+        let status_row = gtk::Box::builder().spacing(8).build();
+        let status_label = gtk::Label::builder()
+            .xalign(0.0)
+            .hexpand(true)
+            .wrap(true)
+            .css_classes(["session-title"])
             .build();
         let dot = gtk::Label::builder()
             .label("●")
-            .css_classes(["error", "title-2"])
+            .css_classes(["error"])
             .build();
         let timer = gtk::Label::builder()
             .label("00:00")
-            .css_classes(["title-1", "numeric"])
+            .css_classes(["numeric", "heading"])
             .build();
+        status_row.append(&status_label);
         status_row.append(&dot);
         status_row.append(&timer);
-        content.append(&status_row);
+        monitor.append(&status_row);
+        monitor.append(&meter_block(
+            "Microphone",
+            "audio-input-microphone-symbolic",
+            &meters[0],
+        ));
+        monitor.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        monitor.append(&meter_block(
+            "Computer audio",
+            "audio-speakers-symbolic",
+            &meters[1],
+        ));
+        content.append(&monitor);
 
-        let status_label = gtk::Label::builder()
-            .css_classes(["dim-label"])
-            .wrap(true)
-            .justify(gtk::Justification::Center)
+        let button = gtk::Button::builder()
+            .hexpand(true)
+            .css_classes(["pill", "capture-button"])
             .build();
-        content.append(&status_label);
-
-        let button = gtk::Button::builder().css_classes(["pill"]).build();
         let pause_button = gtk::Button::builder()
             .label("Pause")
             .css_classes(["pill"])
             .visible(false)
             .build();
-        let buttons = gtk::Box::builder()
-            .spacing(10)
-            .halign(gtk::Align::Center)
-            .build();
+        let buttons = gtk::Box::builder().spacing(10).build();
         buttons.append(&pause_button);
         buttons.append(&button);
         content.append(&buttons);
+        content.append(&group);
         let import_button = gtk::Button::builder()
-            .label("Import an audio file, or drop one here")
+            .child(
+                &adw::ButtonContent::builder()
+                    .icon_name("document-open-symbolic")
+                    .label("Import an audio file")
+                    .build(),
+            )
+            .tooltip_text("Choose a file or drop it onto the window")
             .halign(gtk::Align::Center)
             .css_classes(["flat"])
             .build();
         content.append(&import_button);
 
-        // Transcribing: the animation fills the whole window.
+        // Local processing progress and the latest transcript lines.
         let animation = TranscribeAnimation::new();
 
-        // Done: a wide page. Left the meeting and what to do with it, right the
-        // player and the transcript.
+        // Meeting details in the sidebar, playback and transcript in the reading pane.
         let left = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(16)
@@ -657,9 +677,9 @@ impl Recorder {
             .valign(gtk::Align::Center)
             .build();
         let done_heading = gtk::Label::builder()
-            .label("Meeting saved")
             .xalign(0.0)
-            .css_classes(["title-3"])
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .css_classes(["session-title"])
             .build();
         let done_meta = gtk::Label::builder()
             .xalign(0.0)
@@ -670,9 +690,11 @@ impl Recorder {
         done_text.append(&done_meta);
         done_header.append(&done_icon);
         done_header.append(&done_text);
-        left.append(&done_header);
+        done_text.set_hexpand(true);
 
-        let done_group = adw::PreferencesGroup::new();
+        let done_group = adw::PreferencesGroup::builder()
+            .title("Meeting details")
+            .build();
         let done_title_row = adw::EntryRow::builder()
             .title("Meeting name")
             .show_apply_button(true)
@@ -708,19 +730,13 @@ impl Recorder {
                 .margin_bottom(14)
                 .build(),
         ));
-        let chapters_scroll = gtk::ScrolledWindow::builder()
-            .child(&chapters_list)
-            .vexpand(true)
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .build();
-        chapters_group.add(&chapters_scroll);
+        chapters_group.add(&chapters_list);
         left.append(&chapters_group);
 
         let copy_button = gtk::Button::builder()
             .label("Copy transcript")
             .css_classes(["pill", "suggested-action"])
             .build();
-        left.append(&copy_button);
 
         let actions_button = gtk::MenuButton::builder()
             .label("Actions")
@@ -740,11 +756,11 @@ impl Recorder {
         let actions = gtk::Box::builder().spacing(8).homogeneous(true).build();
         let open_button = gtk::Button::builder()
             .label("Open folder")
-            .css_classes(["pill"])
+            .css_classes(["flat"])
             .build();
         let new_button = gtk::Button::builder()
             .label("New recording")
-            .css_classes(["pill"])
+            .css_classes(["flat"])
             .build();
         actions.append(&open_button);
         actions.append(&new_button);
@@ -769,13 +785,27 @@ impl Recorder {
 
         let right = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(12)
+            .spacing(14)
+            .margin_top(18)
+            .margin_end(20)
+            .margin_bottom(18)
             .hexpand(true)
             .build();
+        right.append(&done_header);
         let player = Player::new();
         right.append(player.widget());
-        // One row per paragraph: time and speaker in fixed columns, the text
-        // wrapping in its own column so every line starts at the same place.
+        let transcript_bar = gtk::Box::builder().spacing(6).build();
+        transcript_bar.append(
+            &gtk::Label::builder()
+                .label("Transcript")
+                .css_classes(["title-3"])
+                .xalign(0.0)
+                .hexpand(true)
+                .build(),
+        );
+        transcript_bar.append(&find_button);
+        transcript_bar.append(&copy_button);
+        right.append(&transcript_bar);
         let transcript_list = gtk::ListBox::builder()
             .css_classes(["transcript"])
             .selection_mode(gtk::SelectionMode::None)
@@ -836,20 +866,13 @@ impl Recorder {
         pip.add_css_class("webcam-pip");
         transcript_layers.add_overlay(pip);
 
-        let done = gtk::Box::builder()
-            .spacing(24)
-            .margin_top(12)
-            .margin_bottom(24)
-            .margin_start(24)
-            .margin_end(24)
-            .build();
-        // A fixed, narrow column on the left; the transcript takes the rest.
-        let left_column = adw::Clamp::builder()
+        let done = gtk::Box::builder().spacing(20).build();
+        let left_column = gtk::ScrolledWindow::builder()
             .child(&left)
-            .maximum_size(320)
-            .tightening_threshold(320)
-            .width_request(320)
             .hexpand(false)
+            .width_request(285)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .css_classes(["meeting-sidebar"])
             .build();
         done.append(&left_column);
         done.append(&right);
@@ -911,7 +934,15 @@ impl Recorder {
             .transition_type(gtk::StackTransitionType::Crossfade)
             .transition_duration(250)
             .build();
-        layout.add_named(&content, Some("record"));
+        let capture_clamp = adw::Clamp::builder()
+            .maximum_size(520)
+            .child(&content)
+            .build();
+        let capture_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .child(&capture_clamp)
+            .build();
+        layout.add_named(&capture_scroll, Some("record"));
         layout.add_named(animation.widget(), Some("transcribing"));
         layout.add_named(&done, Some("done"));
         layout.add_named(&compact, Some("compact"));
@@ -923,16 +954,6 @@ impl Recorder {
             .build();
         let overlay = gtk::Overlay::builder().child(&layout).build();
         overlay.add_overlay(&drop_hint);
-        let notes_button = gtk::Button::builder()
-            .label("a")
-            .tooltip_text("Meeting notes")
-            .css_classes(["flat", "notes-toggle"])
-            .halign(gtk::Align::End)
-            .valign(gtk::Align::End)
-            .margin_end(12)
-            .margin_bottom(12)
-            .build();
-        overlay.add_overlay(&notes_button);
         toasts.set_child(Some(&overlay));
 
         let compact_action = gio::SimpleAction::new("compact", None);
@@ -950,6 +971,7 @@ impl Recorder {
             compact_action,
             compact_button,
             title_row,
+            settings_row,
             format_row,
             language_row,
             webcam_row,
@@ -1016,7 +1038,6 @@ impl Recorder {
             started_at: Cell::new(0),
             paused: Cell::new(false),
             frozen,
-            animation_since: Cell::new(None),
             paused_secs: Cell::new(0),
             pause_began: Cell::new(0),
             pause_button,
@@ -1037,6 +1058,7 @@ impl Recorder {
         });
         recorder.connect_signals(&open_button, &new_button);
         recorder.connect_find(&find_close);
+        recorder.update_settings_summary();
         recorder.render();
         recorder
     }
@@ -1281,6 +1303,7 @@ impl Recorder {
         let weak = Rc::downgrade(self);
         self.webcam_row.connect_active_notify(move |row| {
             if let Some(r) = weak.upgrade() {
+                r.update_settings_summary();
                 settings::save_webcam_on(row.is_active());
                 if let Some((_, name)) = &*r.webcam_camera.borrow() {
                     settings::save_webcam(name);
@@ -1318,10 +1341,11 @@ impl Recorder {
 
         let weak = Rc::downgrade(self);
         self.format_row.connect_selected_notify(move |_| {
-            if let Some(r) = weak.upgrade()
-                && !r.loading.get()
-            {
-                settings::save_format(r.selected_format());
+            if let Some(r) = weak.upgrade() {
+                r.update_settings_summary();
+                if !r.loading.get() {
+                    settings::save_format(r.selected_format());
+                }
             }
         });
 
@@ -1329,6 +1353,7 @@ impl Recorder {
         let weak = Rc::downgrade(self);
         self.language_row.connect_selected_notify(move |row| {
             if let Some(r) = weak.upgrade() {
+                r.update_settings_summary();
                 if !r.loading.get() {
                     settings::save_language(r.selected_language());
                 }
@@ -1519,7 +1544,6 @@ impl Recorder {
                 let result = this
                     .run_transcription(tracks, this.selected_language())
                     .await;
-                this.hold_animation(&result).await;
                 this.finished(true, result);
             });
         });
@@ -1784,6 +1808,20 @@ impl Recorder {
             .unwrap_or(Format::Mono)
     }
 
+    fn update_settings_summary(&self) {
+        let format = self.selected_format().short_label();
+        let language = LANGUAGES
+            .get(self.language_row.selected() as usize)
+            .map_or("Automatic", |(_, label)| label.as_str());
+        let camera = if self.webcam_row.is_active() {
+            " · Webcam on"
+        } else {
+            ""
+        };
+        self.settings_row
+            .set_subtitle(&format!("{format} · {language}{camera}"));
+    }
+
     fn selected_language(&self) -> &'static str {
         LANGUAGES
             .get(self.language_row.selected() as usize)
@@ -1966,7 +2004,8 @@ impl Recorder {
         );
         // A recording keeps its camera; it can be switched off, not swapped.
         self.camera_row.set_sensitive(matches!(state, State::Idle | State::Done));
-        self.dot.set_visible(recording);
+        self.dot.set_visible(recording && !self.paused.get());
+        self.timer.set_visible(recording);
         self.compact_button.set_visible(recording);
         self.find_button.set_visible(state == State::Done);
         self.compact_action.set_enabled(recording);
@@ -2006,22 +2045,17 @@ impl Recorder {
             "The separate tracks of this meeting are gone, so it cannot be transcribed again"
         }));
 
-        let text = match state {
-            State::Idle => "Ready. Press Start recording when the meeting begins.".to_owned(),
-            State::Recording if self.paused.get() => {
-                "Paused. Nothing is recorded until you resume.".to_owned()
-            }
-            State::Recording => {
-                "Recording. Name, audio file and language can still be changed.".to_owned()
-            }
-            State::Stopping => "Saving the audio…".to_owned(),
-            State::Transcribing => "Transcribing the meeting on this computer…".to_owned(),
-            State::Done => String::new(),
-        };
-        self.status_label.set_label(&text);
+        self.status_label.set_label(match state {
+            State::Idle => "Ready to record",
+            State::Recording if self.paused.get() => "Paused",
+            State::Recording => "Recording",
+            State::Stopping => "Saving audio…",
+            State::Transcribing => "Transcribing…",
+            State::Done => "",
+        });
     }
 
-    /// Shows the page for the current state, edge to edge while transcribing.
+    /// Shows and sizes the page for the current state.
     fn show_page(&self) {
         if self.compact.get() {
             return;
@@ -2041,13 +2075,6 @@ impl Recorder {
             ("record", true) => NOTES_SIZE,
             _ => FULL_SIZE,
         });
-        let immersive = matches!(state, State::Stopping | State::Transcribing);
-        self.view.set_extend_content_to_top_edge(immersive);
-        if immersive {
-            self.window.add_css_class("immersive");
-        } else {
-            self.window.remove_css_class("immersive");
-        }
     }
 
     /// Grows the window for the wide done page and shrinks it back for the
@@ -2284,10 +2311,8 @@ impl Recorder {
             chapters: Vec::new(),
             chapters_by: None,
         });
-        self.animation_since.set(Some(std::time::Instant::now()));
         self.animation.reset();
         self.animation.set_stage("Importing audio");
-        self.animation.set_running(true);
         self.set_state(State::Stopping);
 
         let this = self.clone();
@@ -2310,7 +2335,6 @@ impl Recorder {
                 }
                 Err(message) => Err(message),
             };
-            this.hold_animation(&result).await;
             this.finished(result.is_ok(), result);
         });
     }
@@ -2605,7 +2629,6 @@ impl Recorder {
             self.paused.set(false);
         }
         self.freeze_meters(false);
-        self.animation_since.set(Some(std::time::Instant::now()));
         self.mic.stop_recording();
         self.system.stop_recording();
         let webcam = self.webcam.end();
@@ -2613,10 +2636,9 @@ impl Recorder {
             return;
         };
         self.set_compact(false);
-        // Straight to the animation: the waves would suggest it is still recording.
+        // Switch to progress as soon as capture stops.
         self.animation.reset();
         self.animation.set_stage("Saving audio");
-        self.animation.set_running(true);
         self.set_state(State::Stopping);
 
         let format = self.selected_format();
@@ -2674,12 +2696,11 @@ impl Recorder {
             if saved == (true, true) {
                 let _ = std::fs::remove_dir_all(&staging);
             }
-            this.hold_animation(&result).await;
             this.finished(saved.0, result);
         });
     }
 
-    /// Transcribes into `result_dir/transcript.md`, driving the animation.
+    /// Transcribes into `result_dir/transcript.md`, updating the progress page.
     async fn run_transcription(
         &self,
         tracks: Tracks,
@@ -2689,14 +2710,10 @@ impl Recorder {
             return Err("no meeting folder".into());
         };
         self.set_compact(false);
-        if self.animation_since.get().is_none() {
-            self.animation_since.set(Some(std::time::Instant::now()));
-        }
         self.set_state(State::Transcribing);
         self.animation.reset();
         self.animation.set_stage("Loading audio");
         self.animation.set_progress(0.0);
-        self.animation.set_running(true);
 
         let abort = Abort::default();
         *self.abort.borrow_mut() = Some(abort.clone());
@@ -2842,23 +2859,6 @@ impl Recorder {
             .map_err(|e| format!("could not write the transcript: {e}"))
     }
 
-    /// Keeps the animation on screen for at least ten seconds, also after a
-    /// short recording, so it reads as a step rather than a flicker. Skipped
-    /// when it was cancelled or the window is already gone.
-    async fn hold_animation(&self, result: &Result<(), String>) {
-        const MINIMUM: Duration = Duration::from_secs(10);
-        if let Some(since) = self.animation_since.take() {
-            let shown = since.elapsed();
-            let cancelled = matches!(result, Err(message) if message == CANCELLED);
-            if shown < MINIMUM && !cancelled && self.window.is_visible() {
-                self.animation.set_progress(1.0);
-                self.animation.set_stage("Done");
-                glib::timeout_future(MINIMUM - shown).await;
-            }
-        }
-        self.animation.set_running(false);
-    }
-
     fn finished(self: &Rc<Self>, audio_ok: bool, transcript: Result<(), String>) {
         set_name(&self.done_title_row, &self.title_row.text());
         self.set_state(State::Done);
@@ -3000,11 +3000,12 @@ impl Recorder {
     /// Fills the done page from transcript.md: the meta line and the readable transcript.
     fn show_transcript(self: &Rc<Self>, markdown: Option<&str>, problem: Option<&str>) {
         let ok = problem.is_none() && markdown.is_some();
-        self.done_heading.set_label(if ok {
+        self.done_heading.set_label(&self.title());
+        self.done_icon.set_tooltip_text(Some(if ok {
             "Transcript ready"
         } else {
             "Meeting saved"
-        });
+        }));
         self.done_icon.set_icon_name(Some(if ok {
             "object-select-symbolic"
         } else {
@@ -3018,6 +3019,11 @@ impl Recorder {
             self.transcript_list.remove(&row);
         }
         let mut meta = Vec::new();
+        if let Ok(date) = glib::DateTime::from_unix_local(self.started_at.get())
+            .and_then(|date| date.format("%x"))
+        {
+            meta.push(date.to_string());
+        }
         let mut segments = Vec::new();
         let mut notes = Vec::new();
         self.current_line.set(-1);
@@ -3063,21 +3069,6 @@ impl Recorder {
             self.transcript_list.append(&note_row(note));
             search_rows.push(note.clone());
         }
-        // The speaker column is as wide as the longest name.
-        let speaker_width = paragraphs
-            .list
-            .iter()
-            .map(|p| text_width(&self.transcript_list, &p.speaker))
-            .max()
-            .unwrap_or(0);
-        let long = paragraphs
-            .list
-            .last()
-            .is_some_and(|p| p.start_ms >= 3_600_000);
-        let time_width = text_width(
-            &self.transcript_list,
-            if long { "0:00:00" } else { "00:00" },
-        );
         let mut next_chapter = chapters.iter().peekable();
         let mut lines = Vec::new();
         for paragraph in paragraphs.list {
@@ -3091,7 +3082,7 @@ impl Recorder {
                 .iter()
                 .position(|s| *s == paragraph.speaker)
                 .unwrap_or(0);
-            let row = self.paragraph_row(&paragraph, index, time_width, speaker_width);
+            let row = self.paragraph_row(&paragraph, index);
             segments.push((row_count(&self.transcript_list), paragraph.start_ms));
             self.transcript_list.append(&row);
             search_rows.push(format!("{} {}", paragraph.speaker, paragraph.text));
@@ -3257,27 +3248,25 @@ impl Recorder {
         self.toast(&format!("{} chapters added", list.len()));
     }
 
-    /// One paragraph of the transcript: time, speaker and text in columns, with
+    /// One paragraph with its speaker and timestamp above the text, and
     /// edit, swap-speaker and delete buttons that show on hover.
     fn paragraph_row(
         self: &Rc<Self>,
         paragraph: &Paragraph,
         speaker_index: usize,
-        time_width: i32,
-        speaker_width: i32,
     ) -> gtk::ListBoxRow {
         let time = gtk::Label::builder()
             .label(&paragraph.time)
             .xalign(0.0)
-            .valign(gtk::Align::Start)
-            .width_request(time_width)
-            .css_classes(["numeric", "dim-label"])
+            .valign(gtk::Align::Center)
+            .css_classes(["numeric", "dim-label", "caption"])
             .build();
         let speaker = gtk::Label::builder()
             .label(&paragraph.speaker)
             .xalign(0.0)
-            .valign(gtk::Align::Start)
-            .width_request(speaker_width)
+            .valign(gtk::Align::Center)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .tooltip_text(&paragraph.speaker)
             .css_classes([format!("speaker-{}", speaker_index % 6)])
             .build();
         let text = gtk::Label::builder()
@@ -3287,6 +3276,7 @@ impl Recorder {
             .hexpand(true)
             .wrap(true)
             .wrap_mode(gtk::pango::WrapMode::WordChar)
+            .css_classes(["turn-text"])
             .natural_wrap_mode(gtk::NaturalWrapMode::None)
             .build();
         let action = |icon: &str, tooltip: &str| {
@@ -3309,11 +3299,19 @@ impl Recorder {
         actions.append(&swap);
         actions.append(&delete);
 
-        let content = gtk::Box::builder().spacing(14).build();
-        content.append(&time);
-        content.append(&speaker);
+        let byline = gtk::Box::builder().spacing(10).build();
+        byline.append(&speaker);
+        byline.append(&time);
+        actions.set_hexpand(true);
+        actions.set_halign(gtk::Align::End);
+        byline.append(&actions);
+
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .build();
+        content.append(&byline);
         content.append(&text);
-        content.append(&actions);
         let row = gtk::ListBoxRow::builder()
             .child(&content)
             .tooltip_text(format!("Play from {}", paragraph.time))
@@ -3341,14 +3339,12 @@ impl Recorder {
         });
         let weak = Rc::downgrade(self);
         let original = paragraph.text.clone();
-        let (edit_content, edit_speaker, edit_row) =
-            (content.clone(), speaker.clone(), row.clone());
+        let (edit_content, edit_row) = (content.clone(), row.clone());
         edit.connect_clicked(move |button| {
             let Some(r) = weak.upgrade() else { return };
             r.start_editing(
                 &edit_row,
                 &edit_content,
-                &edit_speaker,
                 &text,
                 button,
                 &sources,
@@ -3367,7 +3363,6 @@ impl Recorder {
         self: &Rc<Self>,
         row: &gtk::ListBoxRow,
         content: &gtk::Box,
-        speaker: &gtk::Label,
         label: &gtk::Label,
         edit_button: &gtk::Button,
         sources: &[usize],
@@ -3391,7 +3386,7 @@ impl Recorder {
             .css_classes(["transcript-editor"])
             .build();
         editor.buffer().set_text(original);
-        content.insert_child_after(&editor, Some(speaker));
+        content.append(&editor);
         editor.grab_focus();
 
         let done = Rc::new(Cell::new(false));
@@ -3933,6 +3928,7 @@ impl Recorder {
             let _ = meeting::write(&target, manifest);
             retitled = true;
         }
+        self.done_heading.set_label(&title);
         if !renamed && !retitled {
             return;
         }
@@ -4038,11 +4034,6 @@ fn row_count(list: &gtk::ListBox) -> i32 {
         count += 1;
     }
     count
-}
-
-/// Width in pixels of `text` in the font of `widget`.
-fn text_width(widget: &impl IsA<gtk::Widget>, text: &str) -> i32 {
-    widget.create_pango_layout(Some(text)).pixel_size().0
 }
 
 fn chapter_row(title: &str, start_ms: i64) -> gtk::ListBoxRow {
@@ -4417,52 +4408,10 @@ fn parse_segment(line: &str) -> Option<(&str, &str, &str)> {
     Some((time, speaker, text.trim()))
 }
 
-/// The few styles libadwaita does not have: a see-through header bar over the
-/// animation, and the transcript card.
+/// Recorder-specific styles shared by capture, processing and review.
 fn load_css() {
     let provider = gtk::CssProvider::new();
-    provider.load_from_string(
-        "window.immersive { background: #0d0826; }
-         window.immersive headerbar { background: transparent; box-shadow: none; color: #f8f5f2; }
-         window.immersive headerbar button { color: #f8f5f2; }
-         .transcript { background: transparent; padding: 8px; }
-         .transcript row { padding: 7px 10px; border-radius: 8px; }
-         .transcript row:hover { background: alpha(currentColor, 0.06); }
-         .transcript row.current { background: alpha(@accent_bg_color, 0.25); }
-         .transcript row.match { background: alpha(@accent_bg_color, 0.14); }
-         .transcript row.found { background: alpha(@accent_bg_color, 0.36);
-                                 box-shadow: inset 3px 0 0 @accent_color; }
-         .transcript row.chapter { padding-top: 16px; }
-         .transcript row.chapter:first-child { padding-top: 7px; }
-         .chapter-heading { font-weight: 800; font-size: 1.08em; }
-         .speaker-0, .speaker-1, .speaker-2, .speaker-3, .speaker-4, .speaker-5 { font-weight: 700; }
-         .speaker-0 { color: #5a9cf0; } .speaker-1 { color: #f08a3a; } .speaker-2 { color: #57c27a; }
-         .speaker-3 { color: #d066c8; } .speaker-4 { color: #3fc4cf; } .speaker-5 { color: #d9b53a; }
-         .drop-hint { margin: 10px; border: 3px dashed @accent_color; border-radius: 14px;
-                      background: alpha(@window_bg_color, 0.88); color: @accent_color; }
-         .row-actions { opacity: 0; transition: opacity 120ms; }
-         .transcript row:hover .row-actions, .transcript row.editing .row-actions { opacity: 1; }
-         .row-actions button { min-height: 24px; min-width: 24px; padding: 2px; }
-         .transcript-editor { background: alpha(currentColor, 0.06); border-radius: 6px; padding: 4px 6px; }
-         .transcript-editor text { background: transparent; }
-         .done-icon { color: @accent_color; }
-         .player { padding: 6px 14px 6px 6px; }
-         .notes { background: @window_bg_color; border-left: 1px solid alpha(currentColor, 0.1); }
-         .notes-toggle { min-height: 24px; min-width: 24px; padding: 0 6px; border-radius: 6px;
-                                border: 1px solid alpha(currentColor, 0.25); font-family: \"IBM Plex Mono\", \"JetBrainsMono Nerd Font\", monospace;
-                                font-size: 13px; color: alpha(currentColor, 0.6); }
-         .notes-toggle:hover { color: currentColor; }
-         .webcam-preview { border-radius: 6px; background: black; margin: 6px 4px 6px 0; }
-         .player-video { border-radius: 10px; background: black; }
-         .webcam-pip { border-radius: 10px; box-shadow: 0 10px 30px alpha(black, 0.45); }
-         .notes-text { font-family: \"IBM Plex Mono\", \"JetBrainsMono Nerd Font\", \"JetBrains Mono\", monospace;
-                              font-size: 21px; line-height: 1.6; background: transparent; caret-color: currentColor; }
-         .notes-text text { background: transparent; }
-         .notes-footer { font-family: \"IBM Plex Mono\", \"JetBrainsMono Nerd Font\", \"JetBrains Mono\", monospace;
-                                font-size: 11px; color: alpha(currentColor, 0.5); }
-         .notes-button { min-height: 26px; min-width: 26px; padding: 2px; color: alpha(currentColor, 0.5); }
-         .notes-button:hover { color: currentColor; }",
-    );
+    provider.load_from_string(include_str!("recorder.css"));
     if let Some(display) = gtk::gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
             &display,
@@ -4531,8 +4480,13 @@ fn meter(
         for (i, peak) in levels.into_iter().enumerate() {
             let h = (to_meter(peak) * (height - 4.0)).max(1.0);
             cr.set_source_rgba(r, g, b, (0.35 + 0.65 * i as f64 / HISTORY as f64) * dim);
-            cr.rectangle(i as f64 * step, mid - h / 2.0, bar, h);
-            let _ = cr.fill();
+            let x = (i as f64 + 0.5) * step;
+            let stroke = bar.min(h);
+            cr.set_line_width(stroke);
+            cr.set_line_cap(gtk::cairo::LineCap::Round);
+            cr.move_to(x, mid - (h - stroke) / 2.0);
+            cr.line_to(x, mid + (h - stroke) / 2.0);
+            let _ = cr.stroke();
         }
         // A pause sign in the middle of the big meters, so it is obvious.
         if paused && height >= 40.0 {
@@ -4560,24 +4514,18 @@ fn meter(
     area
 }
 
-fn meter_block(name: &str, meter: &gtk::DrawingArea) -> gtk::Box {
-    let block = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(6)
-        .build();
-    block.append(
+fn meter_block(name: &str, icon: &str, meter: &gtk::DrawingArea) -> gtk::Box {
+    let block = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    header.append(&gtk::Image::from_icon_name(icon));
+    header.append(
         &gtk::Label::builder()
             .label(name)
-            .xalign(0.0)
             .css_classes(["heading"])
             .build(),
     );
-    block.append(
-        &gtk::Frame::builder()
-            .child(meter)
-            .css_classes(["card"])
-            .build(),
-    );
+    block.append(&header);
+    block.append(meter);
     block
 }
 

@@ -47,6 +47,12 @@ enum MeetingWorkflowTests {
             precondition(range.start.seconds == 0 && abs(range.duration.seconds - 0.2) < 0.001)
         }
 
+        let wave = try await MeetingEnvelope.load(folder: temp, duration: 0.4)
+        for channel in [wave.microphone, wave.system] {
+            precondition(channel.count == 360)
+            precondition(abs(channel[0] - 0.4) < 0.001 && channel[359] == 0)
+        }
+
         checkpoint("Encoding M4A fixture")
         let input = temp.appendingPathComponent("sample.m4a")
         let convert = Process()
@@ -64,6 +70,8 @@ enum MeetingWorkflowTests {
         precondition(importedTracks.count == 1)
         let decoded = try AVAudioFile(forReading: imported.appendingPathComponent("Import.wav"))
         precondition(decoded.length > 0 && FileManager.default.fileExists(atPath: input.path))
+        let importedWave = try await MeetingEnvelope.load(folder: imported, duration: 0.2)
+        precondition(importedWave.microphone.contains { $0 > 0 } && importedWave.system.isEmpty)
         let lines = TranscriptLine.read("**[00:00:00] Mikrofon · Taler 1**  \nHej\n\n**[00:00:00.152] Systemlyd · Taler 2**  \nJa\npræcis.\n")
         precondition(lines.count == 2 && lines[0].time == 0 && lines[1].time == 0.152 && lines[1].text == "Ja\npræcis.")
         print("Pause, resume, WAV timing, two-track playback composition, compressed audio import and transcript timestamps verified.")

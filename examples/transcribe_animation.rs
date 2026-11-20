@@ -28,7 +28,16 @@ fn main() -> glib::ExitCode {
     let app = adw::Application::builder()
         .application_id("com.jankeesvw.OmarchyMeetingRecorder.AnimationPreview")
         .build();
-    app.connect_startup(|_| theme::follow(|| {}));
+    app.connect_startup(|_| {
+        let provider = gtk::CssProvider::new();
+        provider.load_from_string(include_str!("../src/recorder.css"));
+        gtk::style_context_add_provider_for_display(
+            &gtk::gdk::Display::default().unwrap(),
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+        theme::follow(|| {});
+    });
     app.connect_activate(|app| {
         let anim = animation::TranscribeAnimation::new();
         let window = gtk::ApplicationWindow::builder()
@@ -38,7 +47,6 @@ fn main() -> glib::ExitCode {
             .default_height(700)
             .child(anim.widget())
             .build();
-        anim.set_running(true);
 
         // A 24 second loop: loading, then two tracks, a line every few seconds.
         let tick = Rc::new(Cell::new(0u32));

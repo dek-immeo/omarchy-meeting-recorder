@@ -12,7 +12,16 @@ final class Recorder: ObservableObject {
     @Published private(set) var lastFolder: URL?
     @Published private(set) var message: String?
     struct Reading { let level: Float; let date: Date }
-    @Published private(set) var meters: [Track: Reading] = [:]
+    @Published private(set) var meters: [Track: [Reading]] = [:]
+
+    private func receive(_ peak: Float, from track: Track) {
+        guard phase == .starting || phase == .recording else { return }
+        var samples = meters[track] ?? []
+        let now = Date()
+        samples.removeAll { now.timeIntervalSince($0.date) >= Meter.historySeconds }
+        samples.append(Reading(level: peak, date: now))
+        meters[track] = samples
+    }
     @Published private(set) var transcriptionStatus = ""
     @Published var mode = TranscriptionMode.local
     @Published var azureResource = UserDefaults.standard.string(forKey: "azureSpeechResource") ?? ""
@@ -76,7 +85,7 @@ final class Recorder: ObservableObject {
                 phase = .starting
                 let folder = try MeetingFiles.newFolder()
                 let session = Capture(folder: folder, meter: { [weak self] track, peak in
-                    Task { @MainActor in self?.meters[track] = Reading(level: peak, date: Date()) }
+                    Task { @MainActor in self?.receive(peak, from: track) }
                 }, interrupted: { [weak self] in Task { @MainActor in self?.stop() } })
                 capture = session
                 started = Date()
@@ -110,12 +119,12 @@ final class Recorder: ObservableObject {
             pausedFrames = capture.setPaused(true)
             if usesAzureLive { live.cancel() }
             pausedAt = now
-            meters = [:]
             phase = .paused
         } else if phase == .paused, let pausedAt, let started {
             capture.setPaused(false)
             self.started = started.addingTimeInterval(now.timeIntervalSince(pausedAt))
             self.pausedAt = nil
+            meters = [:]
             phase = .recording
             if usesAzureLive, let settings = liveSettings {
                 live.start(folder: capture.folder, azure: settings, resumeFrom: pausedFrames) { await capture.writtenFrames() }
@@ -239,19 +248,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 struct Meter: View {
+    static let historySeconds = 5.0
     let title: String
     let icon: String
-    let reading: Recorder.Reading?
+    let samples: [Recorder.Reading]
     let date: Date
+    let tint: Color
+
     var body: some View {
-        let peak = reading.flatMap { date.timeIntervalSince($0.date) < 0.5 ? $0.level : nil } ?? 0
-        let db = 20 * log10(max(Double(peak), 0.001))
-        HStack(spacing: 12) {
-            Image(systemName: icon).foregroundStyle(.secondary).frame(width: 20)
-            Text(title).frame(width: 82, alignment: .leading)
-            ProgressView(value: max(0, min(1, (db + 60) / 60))).tint(.accentColor)
-            Text(peak > 0.001 ? String(format: "%.0f dB", db) : "— dB")
-                .monospacedDigit().foregroundStyle(.secondary).frame(width: 58, alignment: .trailing)
+        let latest = samples.last.flatMap { date.timeIntervalSince($0.date) < 0.5 ? $0.level : nil } ?? 0
+        let level = latest > 0.001 ? String(format: "%.0f dB", 20 * log10(latest)) : "— dB"
+        VStack(spacing: 7) {
+            HStack {
+                Label(title, systemImage: icon).font(.headline)
+                Spacer()
+                Text(level).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            Canvas { context, size in
+                let count = max(1, Int(size.width / 4))
+                let step = size.width / CGFloat(count)
+                var peaks = [Float](repeating: 0, count: count)
+                for sample in samples {
+                    let age = date.timeIntervalSince(sample.date)
+                    guard age >= 0, age < Self.historySeconds else { continue }
+                    let index = count - 1 - Int(age / Self.historySeconds * Double(count))
+                    peaks[index] = max(peaks[index], sample.level)
+                }
+                for (index, peak) in peaks.enumerated() {
+                    let db = 20 * log10(max(0.001, Double(peak)))
+                    let height = max(2, min(1, (db + 60) / 60) * size.height)
+                    let rect = CGRect(x: CGFloat(index) * step, y: (size.height - height) / 2,
+                                      width: step * 0.55, height: height)
+                    context.fill(Path(roundedRect: rect, cornerRadius: 1.5), with: .color(tint.opacity(peak > 0 ? 0.85 : 0.4)))
+                }
+            }
+            .frame(height: 35)
+            .accessibilityHidden(true)
         }
         .accessibilityElement(children: .combine)
     }
@@ -259,30 +291,144 @@ struct Meter: View {
 
 struct RecorderView: View {
     @ObservedObject var recorder: Recorder
-    @State private var review: MeetingSelection?
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.openWindow) private var openWindow
+    @State private var settingsOpen = false
+    private var palette: RecorderPalette { RecorderPalette(scheme) }
+    private var capturing: Bool { recorder.phase == .recording || recorder.phase == .paused }
+    private var processing: Bool { [.stopping, .importing, .transcribing].contains(recorder.phase) }
+
     var body: some View {
-        let phase = recorder.phase
-        VStack(alignment: .leading, spacing: 20) {
+        GeometryReader { geometry in
+            let wide = geometry.size.width >= 820 && recorder.phase == .ready
+            let layout = wide ? AnyLayout(HStackLayout(alignment: .top, spacing: 24))
+                              : AnyLayout(VStackLayout(alignment: .leading, spacing: 16))
+            ScrollView {
+                layout {
+                    VStack(alignment: .leading, spacing: 16) {
+                        if processing {
+                            processingPanel
+                        } else {
+                            monitor
+                            controls
+                        }
+                    }.frame(maxWidth: .infinity)
+                    VStack(alignment: .leading, spacing: 16) {
+                        details
+                    }.frame(maxWidth: .infinity)
+                }
+                .padding(geometry.size.width < 420 ? 16 : 24)
+                .frame(maxWidth: wide ? 1120 : 720)
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .background(palette.canvas)
+        .foregroundStyle(palette.ink)
+        .tint(palette.accent)
+        .frame(minWidth: 360, minHeight: 300)
+    }
+
+    @ViewBuilder private var details: some View {
+        if capturing && recorder.liveEnabled {
+            LiveTranscriptView(preview: recorder.live, paused: recorder.phase == .paused)
+        }
+        if recorder.phase == .ready {
+            settings
+            if recorder.mode == .azure {
+                Text("Lydsporene sendes til din Azure-ressource. Azure kan opkræve betaling. Nøglen bruges kun, mens appen er åben.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
             HStack {
-                Circle().fill(phase == .recording ? Color.red : .secondary).frame(width: 9, height: 9)
-                Text(status).font(.title2.bold())
+                Button { openMeeting() } label: { Label("Åbn møde…", systemImage: "folder") }
+                Spacer()
+                Button { recorder.importAudio() } label: { Label("Importer lyd…", systemImage: "waveform.badge.plus") }
+                    .disabled(!recorder.configured)
+            }.buttonStyle(.borderless).padding(.horizontal, 6)
+        }
+        if let issue = recorder.permissionIssue { permissionPanel(issue) }
+        if let message = recorder.message {
+            Label(message, systemImage: "exclamationmark.triangle")
+                .textSelection(.enabled).padding(14).recorderCard(palette)
+        }
+        if recorder.phase == .ready, let folder = recorder.lastFolder {
+            Divider()
+            HStack {
+                Button("Vis seneste optagelse") { NSWorkspace.shared.open(folder) }
+                Spacer()
+                if let file = recorder.transcriptFile, FileManager.default.fileExists(atPath: file.path) {
+                    Button("Åbn transskription") {
+                        showReview(MeetingSelection(folder: file.deletingLastPathComponent(), preferred: file.lastPathComponent))
+                    }
+                }
+            }.buttonStyle(.borderless)
+        }
+    }
+
+    private func showReview(_ selection: MeetingSelection) {
+        openWindow(id: "meeting-review", value: selection)
+    }
+
+    private var monitor: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            HStack {
+                Text(status).font(recorderHeading)
                 Spacer()
                 if let started = recorder.started {
                     TimelineView(.periodic(from: started, by: 1)) { time in
                         let seconds = max(0, Int((recorder.pausedAt ?? time.date).timeIntervalSince(started)))
-                        Text(String(format: "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60))
-                            .monospacedDigit().font(.title2)
+                        HStack(spacing: 6) {
+                            if recorder.phase == .recording { Circle().fill(.red).frame(width: 7, height: 7) }
+                            Text(String(format: "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60))
+                                .font(.callout.monospacedDigit())
+                        }
                     }
                 }
             }
-            TimelineView(.periodic(from: .now, by: 0.2)) { time in
-                VStack(spacing: 14) {
-                    Meter(title: "Mikrofon", icon: "mic", reading: recorder.meters[.microphone], date: time.date)
-                    Meter(title: "Systemlyd", icon: "speaker.wave.2", reading: recorder.meters[.system], date: time.date)
+            TimelineView(.animation(minimumInterval: 0.1, paused: recorder.phase != .recording)) { time in
+                let date = recorder.pausedAt ?? time.date
+                VStack(spacing: 13) {
+                    Meter(title: "Mikrofon", icon: "mic.fill", samples: recorder.meters[.microphone] ?? [], date: date, tint: palette.mic)
+                    Divider()
+                    Meter(title: "Systemlyd", icon: "speaker.wave.2.fill", samples: recorder.meters[.system] ?? [], date: date, tint: palette.system)
                 }
             }
-            Divider()
-            if phase == .ready {
+        }.padding(22).recorderCard(palette, monitor: true)
+    }
+
+    private var controls: some View {
+        HStack(spacing: 12) {
+            if capturing {
+                Button(recorder.phase == .paused ? "Genoptag" : "Pause") { recorder.togglePause() }
+                    .controlSize(.large).recorderButtonShape()
+            }
+            Button {
+                if recorder.phase == .ready { recorder.start() } else { recorder.stop() }
+            } label: {
+                Label(recorder.phase == .checking ? "Annuller" : capturing ? "Stop optagelse" : "Start optagelse",
+                      systemImage: recorder.phase == .checking ? "xmark" : capturing ? "stop.fill" : "record.circle")
+                    .font(.headline).frame(maxWidth: .infinity, minHeight: 29)
+            }
+            .buttonStyle(.borderedProminent).recorderButtonShape().controlSize(.large)
+            .tint(capturing ? .red : palette.accent)
+            .disabled(recorder.phase == .starting || (recorder.phase == .ready && !recorder.recordingConfigured))
+        }
+    }
+
+    private var settings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button { settingsOpen.toggle() } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "slider.horizontal.3")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Indstillinger").font(.headline)
+                        Text(recorder.mode.rawValue).font(.callout).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: settingsOpen ? "chevron.up" : "chevron.down").foregroundStyle(.secondary)
+                }.contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityValue(settingsOpen ? "Udvidet" : "Skjult")
+            if settingsOpen {
+                Divider()
                 Toggle("Vis live-transskription", isOn: $recorder.liveEnabled)
                 if recorder.liveEnabled {
                     Picker("Under mødet", selection: $recorder.liveProvider) {
@@ -300,8 +446,6 @@ struct RecorderView: View {
                 }.pickerStyle(.segmented)
                 if recorder.mode == .azure {
                     TextField("Azure Speech-ressourcens navn", text: $recorder.azureResource)
-                    Text("Begge lydspor sendes til din Azure-ressource. Azure kan opkræve betaling. Nøglen bruges kun, mens appen er åben.")
-                        .font(.callout).foregroundStyle(.secondary)
                 }
                 if recorder.usesAzureLive || recorder.mode == .azure {
                     SecureField("Azure Speech-nøgle", text: $recorder.azureKey)
@@ -309,73 +453,44 @@ struct RecorderView: View {
                 if recorder.usesAzureLive && !recorder.speechEndpoint.isEmpty && !recorder.azureKey.isEmpty && recorder.liveSettings == nil {
                     Text("Kontrollér Speech-endpointet fra Azure-portalen og talesproget (fx da-DK).").font(.callout)
                 }
+                Button("Transskriber tidligere optagelse…") { recorder.selectRecording() }
+                    .disabled(!recorder.configured)
             }
-            if recorder.liveEnabled && (phase == .recording || phase == .paused) {
-                LiveTranscriptView(preview: recorder.live, paused: phase == .paused)
-            }
-            if phase == .transcribing {
-                HStack {
-                    ProgressView().controlSize(.small)
-                    Text(recorder.transcriptionStatus).lineLimit(2)
+        }.padding(16).recorderCard(palette)
+    }
+
+    private var processingPanel: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(status).font(recorderHeading)
+            HStack {
+                ProgressView().controlSize(.small)
+                if recorder.phase == .transcribing {
+                    Text(recorder.transcriptionStatus).fixedSize(horizontal: false, vertical: true)
                     Spacer()
                     Button("Annuller") { recorder.cancelTranscription() }
                 }
             }
-            if let issue = recorder.permissionIssue {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("Meeting Recorder mangler adgang til " + issue.title.lowercased(), systemImage: "lock")
-                    Text("Tillad denne kopi i Systemindstillinger, og tryk Start igen. Er adgangen allerede slået til, så afslut appen med ⌘Q og åbn den igen fra Programmer.")
-                    Text(Bundle.main.bundleURL.path).font(.caption).textSelection(.enabled)
-                    HStack {
-                        Button("Åbn indstillinger") { NSWorkspace.shared.open(issue.settings) }
-                        Button("Vis app i Finder") { NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL]) }
-                    }
-                }
-                .fixedSize(horizontal: false, vertical: true)
-            }
-            if let message = recorder.message {
-                Label(message, systemImage: "exclamationmark.triangle").textSelection(.enabled)
-            }
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(22).recorderCard(palette, monitor: true)
+    }
+
+    private func permissionPanel(_ issue: CapturePermission) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Tillad adgang til " + issue.title.lowercased(), systemImage: "lock").font(.headline)
+            Text("Tillad denne kopi i Systemindstillinger, og tryk Start igen. Hvis adgangen allerede er slået til, så afslut med ⌘Q og åbn samme kopi igen.")
+            Text(Bundle.main.bundleURL.path).font(.caption).textSelection(.enabled)
             HStack {
-                Button {
-                    if phase == .ready { recorder.start() } else { recorder.stop() }
-                } label: {
-                    Label(phase == .checking ? "Annuller" : (phase == .recording || phase == .paused || phase == .stopping ? "Stop optagelse" : "Start optagelse"),
-                          systemImage: phase == .checking ? "xmark" : (phase == .recording || phase == .paused || phase == .stopping ? "stop.fill" : "record.circle"))
-                }
-                .buttonStyle(.borderedProminent).controlSize(.large)
-                .disabled((phase != .ready && phase != .recording && phase != .paused && phase != .checking) || (phase == .ready && !recorder.recordingConfigured))
-                if phase == .recording || phase == .paused {
-                    Button(phase == .paused ? "Genoptag" : "Pause") { recorder.togglePause() }
-                }
-                Spacer()
-                if let folder = recorder.lastFolder {
-                    Button("Vis seneste optagelse") { NSWorkspace.shared.open(folder) }
-                }
+                Button("Åbn indstillinger") { NSWorkspace.shared.open(issue.settings) }
+                Button("Vis app i Finder") { NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL]) }
             }
-            if phase == .ready {
-                HStack {
-                    Button("Åbn møde…") {
-                        let panel = NSOpenPanel()
-                        panel.canChooseFiles = false
-                        panel.canChooseDirectories = true
-                        panel.directoryURL = MeetingFiles.root
-                        if panel.runModal() == .OK, let url = panel.url { review = MeetingSelection(folder: url) }
-                    }
-                    Button("Importer lyd…") { recorder.importAudio() }.disabled(!recorder.configured)
-                }
-                HStack {
-                    Button("Transskriber tidligere optagelse…") { recorder.selectRecording() }.disabled(!recorder.configured)
-                    Spacer()
-                    if let file = recorder.transcriptFile,
-                       FileManager.default.fileExists(atPath: file.path) {
-                        Button("Åbn transskription") { review = MeetingSelection(folder: file.deletingLastPathComponent(), preferred: file.lastPathComponent) }
-                    }
-                }
-            }
-        }
-        .padding(24).frame(minWidth: 445, idealWidth: 480)
-        .sheet(item: $review) { MeetingReview(selection: $0) }
+        }.padding(14).recorderCard(palette)
+    }
+
+    private func openMeeting() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.directoryURL = MeetingFiles.root
+        if panel.runModal() == .OK, let url = panel.url { showReview(MeetingSelection(folder: url)) }
     }
     private var status: String {
         switch recorder.phase {
@@ -398,7 +513,19 @@ struct MeetingRecorderApp: App {
     var body: some Scene {
         Window("Meeting Recorder", id: "recorder") {
             RecorderView(recorder: delegate.recorder)
-        }.windowResizability(.contentSize)
+        }
+        .defaultSize(width: 480, height: 520)
+        .windowResizability(.contentMinSize)
+
+        WindowGroup("Mødedetaljer", id: "meeting-review", for: MeetingSelection.self) { $selection in
+            if let selection {
+                MeetingReview(selection: selection)
+                    .navigationTitle(selection.folder.lastPathComponent)
+            }
+        }
+        .defaultSize(width: 900, height: 620)
+        .windowResizability(.contentMinSize)
+        .commandsRemoved()
     }
 }
 #endif

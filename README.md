@@ -4,9 +4,9 @@ A meeting recorder for [Omarchy](https://omarchy.org). It records your microphon
 
 No bot joins your call, and no audio leaves your computer. It works with any meeting app, because it simply listens to what your computer plays and what you say.
 
-![The done screen in Tokyo Night: chapters on the left, the transcript on the right, a waveform player above it](screenshots/hero.webp)
+![A finished meeting in dark mode with chapters, playback and a speaker-labelled transcript](screenshots/hero.webp)
 
-Open the app, check that both meters move, and press **Start recording**. When you stop, [whisper.cpp](https://github.com/ggml-org/whisper.cpp) transcribes the meeting while a 90s animation keeps you company. You get the transcript with who said what, a player to listen back from any line, and chapters written by the coding agent you already use. Everything takes the colours of your Omarchy theme.
+Open the app, check that both meters move, and press **Start recording**. When you stop, [whisper.cpp](https://github.com/ggml-org/whisper.cpp) transcribes the meeting and shows the latest lines as they are recognised. You get the transcript with who said what, a player to listen back from any line, and chapters written by the coding agent you already use. Everything takes the colours of your Omarchy theme.
 
 Built for Omarchy on Hyprland (GTK 4 and libadwaita, written in Rust).
 
@@ -30,15 +30,13 @@ Then open **Meeting Recorder** from the launcher. The first transcription downlo
 
 Prefer to build it yourself? See [Build from source](#build-from-source), or grab the binary from the [latest release](https://github.com/jankeesvw/omarchy-meeting-recorder/releases/latest).
 
-<p align="center"><img src="screenshots/transcribing-animation.webp" alt="The transcribing animation: a neon sun over a scrolling grid, the progress bar and the lines as they are recognised, with the speakers' names" width="420"></p>
-
 ## What it does
 
 ### Checks the sound before you start
 
-The app opens ready, not recording. The two meters are live from the start, the same moving waves as while recording, so you can see that both your microphone and the computer audio arrive before the meeting begins. Type a name if you like (otherwise it becomes "Meeting 14:30"), pick the audio format and the transcript language, and press **Start recording**.
+The app opens ready, not recording. The two meters are live from the start, the same moving waves as while recording, so you can see that both your microphone and the computer audio arrive before the meeting begins. Type a name if you like (otherwise it becomes "Meeting 14:30"), expand **Recording settings** to pick the audio format and the transcript language, and press **Start recording**.
 
-<p align="center"><img src="screenshots/ready.webp" alt="The ready page: meeting name, audio file, language, two meters that say Not recording, the Start recording button and Import an audio file, or drop one here" width="440"></p>
+<p align="center"><img src="screenshots/ready.webp" alt="The ready page with both input meters, Start recording, the meeting name, recording settings and audio import" width="440"></p>
 
 ### Records both sides of the call
 
@@ -54,9 +52,9 @@ Turn on **Webcam** and your camera is recorded next to the audio, as `webcam.mp4
 
 ### Keeps your meeting notes next to the recording
 
-The **a** in the corner of the ready page opens meeting notes next to the recorder, empty in a new window: the script of a voice-over, or what you want to say in a meeting. The paragraph with the cursor is lit and kept in the middle; ↓ and ↑ (or Ctrl+↓ and Ctrl+↑ while you type) move to the next and the previous one, and every edit is saved right away. `omarchy-meeting-recorder --notes <file>` opens a file of your own there. A recording made with meeting notes open keeps a copy as `notes.md` in its meeting folder, and the done page shows it next to the transcript.
+**Notes** in the recording toolbar opens meeting notes next to the recorder, empty in a new window: the script of a voice-over, or what you want to say in a meeting. The paragraph with the cursor is lit and kept in the middle; ↓ and ↑ (or Ctrl+↓ and Ctrl+↑ while you type) move to the next and the previous one, and every edit is saved right away. `omarchy-meeting-recorder --notes <file>` opens a file of your own there. A recording made with meeting notes open keeps a copy as `notes.md` in its meeting folder, and the done page shows it next to the transcript.
 
-![Recording Launch sync with the meeting notes beside it: the agenda for the call, with the paragraph about Northwind lit and the others dimmed](screenshots/notes.webp)
+![The recorder beside the design review agenda, with the current paragraph highlighted](screenshots/notes.webp)
 
 ### Stays out of the way
 
@@ -70,9 +68,9 @@ The bar widget shows the same while you record: a pulsing dot, a small waveform 
 
 ### Transcribes on your own machine
 
-When you stop, the window switches straight to the transcribing animation: it saves the audio, then [whisper-rs](https://github.com/tazz4843/whisper-rs) transcribes the meeting, and the lines type themselves out with the speakers' names as they are recognised. It ends on 100% and DONE, and stays at least ten seconds, also for a short recording. Nothing is sent anywhere.
+When you stop, the app saves the audio, then [whisper-rs](https://github.com/tazz4843/whisper-rs) transcribes the meeting, and shows progress with a rolling preview of the latest lines. The transcript opens as soon as processing finishes. Nothing is sent anywhere.
 
-<p align="center"><img src="screenshots/transcribing.webp" alt="The transcribing animation at 77 percent with lines from Maya and Tom" width="440"></p>
+<p align="center"><img src="screenshots/transcribing.webp" alt="The local transcription progress and recent lines" width="440"></p>
 
 ### Imports any recording
 
@@ -84,13 +82,13 @@ Drop an audio file on the window, or click **Import an audio file**: a phone mem
 
 ### Gives you a transcript you can listen to
 
-The done screen puts the transcript on the right: the time, the speaker and the text in their own columns, one paragraph per turn. Above it sits a player with a waveform of both sides, your side above the line and the other side below it. Click in the waveform to seek, or click any line to play from there. The line that is playing is highlighted and the transcript scrolls along.
+The done screen puts the transcript on the right: each turn has a speaker and a timestamp above its text. Above it sits a player with a waveform of both sides, your side above the line and the other side below it. Click in the waveform to seek, or click any line to play from there. The line that is playing is highlighted and the transcript scrolls along.
 
 Recorded too early, or forgot to stop? Drag across the waveform to select the part that matters and press the scissors next to it. That part becomes a new meeting, with its audio, webcam video, transcript and chapters, without transcribing again. The meeting you cut it from stays as it is.
 
-On the left: the meeting name and one row per speaker, which you can rename at any time (the folder, the transcript and the manifest follow, and your own name is remembered for next time; give two speakers the same name and they become one), the chapters, **Copy transcript** (also Enter), Open folder, New recording, and the language to transcribe again in.
+On the left: the meeting name and one row per speaker, which you can rename at any time (the folder, the transcript and the manifest follow, and your own name is remembered for next time; give two speakers the same name and they become one), the chapters, Open folder, New recording, and the language to transcribe again in. Search and **Copy transcript** (also Enter) sit above the transcript.
 
-![The done screen while playing: the current chapter selected and the current line highlighted](screenshots/done.webp)
+![Searching for a phrase in the meeting transcript](screenshots/done.webp)
 
 ### Lets you fix it where you read it
 

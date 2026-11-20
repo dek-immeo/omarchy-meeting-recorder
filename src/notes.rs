@@ -2,7 +2,7 @@
 //! recording and to edit on the spot, like the script of a voice-over.
 //!
 //! `omarchy-meeting-recorder --notes <file>` opens it in the recorder
-//! window, and so does the [a] in the corner of the recording page. The paragraph with the
+//! window, and so does Notes in the recording toolbar. The paragraph with the
 //! cursor is lit and the others are dimmed. Ctrl+↓ and Ctrl+↑, or the buttons
 //! above the text, move to the next and the previous paragraph and keep it in
 //! the middle; so do ↓ and ↑ while the cursor is not in the text. Every edit
@@ -23,7 +23,7 @@ use crate::APP_NAME;
 /// The notes in a meeting folder, when they were open as it was recorded.
 pub const NOTES_FILE: &str = "notes.md";
 
-/// The notes the [a] button opens when none were open yet in this window: a
+/// The notes the Notes button opens when none were open yet in this window: a
 /// file of the app's own, emptied each time, so a new window starts blank.
 pub fn fresh_notes() -> PathBuf {
     let path = glib::user_data_dir().join(APP_NAME).join("notes.md");
@@ -71,7 +71,7 @@ pub struct Notes {
     position_label: gtk::Label,
     dim: gtk::TextTag,
     path: RefCell<Option<PathBuf>>,
-    /// The notes that were open last, for the [a] button to bring back.
+    /// The notes that were open last, for the Notes button to bring back.
     last: RefCell<Option<PathBuf>>,
     /// Set while the file is put in the buffer, so that is not saved again.
     loading: Cell<bool>,
