@@ -38,11 +38,15 @@ enum MeetingFiles {
         do {
             let output = try AVAudioFile(forWriting: staging.appendingPathComponent("Import.wav"), settings: settings,
                                          commonFormat: .pcmFormatFloat32, interleaved: false)
-            while true {
+            let length = input.length
+            while input.framePosition < length {
                 try Task.checkCancellation()
-                try input.read(into: buffer, frameCount: buffer.frameCapacity)
+                let remaining = length - input.framePosition
+                let count = AVAudioFrameCount(min(remaining, Int64(buffer.frameCapacity)))
+                try input.read(into: buffer, frameCount: count)
                 if buffer.frameLength == 0 { break }
                 try output.write(from: buffer)
+                if buffer.frameLength < count { break }
             }
             guard output.length > 0 else { throw RecorderError("Filen indeholder ingen lyd.") }
         }

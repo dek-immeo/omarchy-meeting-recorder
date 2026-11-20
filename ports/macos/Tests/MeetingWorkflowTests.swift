@@ -22,10 +22,15 @@ enum MeetingWorkflowTests {
         try wav.finish(at: clock.endTime(start + 8.2))
     }
 
+    static func checkpoint(_ message: String) {
+        FileHandle.standardError.write(Data((message + "\n").utf8))
+    }
+
     static func main() async throws {
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temp) }
+        checkpoint("Writing both paused tracks")
         let start = hostSeconds()
         for (track, rate) in [(Track.microphone, 44_100.0), (.system, 48_000.0)] {
             let file = temp.appendingPathComponent(track.filename)
@@ -33,6 +38,7 @@ enum MeetingWorkflowTests {
             let saved = try AVAudioFile(forReading: file)
             precondition(saved.length == Int64(rate / 5))
         }
+        checkpoint("Loading captured tracks for playback")
         let mix = try await MeetingAudio.composition(folder: temp)
         let tracks = try await mix.loadTracks(withMediaType: .audio)
         precondition(tracks.count == 2)
@@ -41,6 +47,7 @@ enum MeetingWorkflowTests {
             precondition(range.start.seconds == 0 && abs(range.duration.seconds - 0.2) < 0.001)
         }
 
+        checkpoint("Encoding M4A fixture")
         let input = temp.appendingPathComponent("sample.m4a")
         let convert = Process()
         convert.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
@@ -49,7 +56,9 @@ enum MeetingWorkflowTests {
         convert.waitUntilExit()
         precondition(convert.terminationStatus == 0)
         let imported = temp.appendingPathComponent("imported")
+        checkpoint("Importing compressed audio")
         try await MeetingFiles.importAudio(input, to: imported)
+        checkpoint("Loading imported audio for playback")
         let importedMix = try await MeetingAudio.composition(folder: imported)
         let importedTracks = try await importedMix.loadTracks(withMediaType: .audio)
         precondition(importedTracks.count == 1)
