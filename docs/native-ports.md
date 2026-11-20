@@ -27,7 +27,9 @@ docker build -t meeting-recorder-dev:native .devcontainer
 docker run --rm -it -u vscode -v "$PWD:/work" -w /work meeting-recorder-dev:native bash
 ```
 
-Inde i containeren kan de eksisterende enhedstests køres med `cargo test --locked --no-default-features`. Upstreams transskriptionsbenchmark og tærskler er beskrevet i [bench/README.md](../bench/README.md).
+I et cloudmiljø med en administreret HTTPS-proxy kan værtsmaskinens CA-bundle gives til bygget med `--secret id=proxy_ca,src=/etc/ssl/certs/ca-certificates.crt` og til den kørende container med `-v /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro`.
+
+Inde i containeren kan de eksisterende enhedstests køres med `cargo test --locked --no-default-features --features ort/load-dynamic`. Containeren medbringer CPU-udgaven af ONNX Runtime 1.28.0 fra den officielle Python-pakke, så Rust-testen kan indlæse biblioteket lokalt. Upstreams transskriptionsbenchmark og tærskler er beskrevet i [bench/README.md](../bench/README.md).
 
 GitHub Actions-workflowet **Native audio SDK probes** bygger WASAPI-kald med Visual Studio på Windows og kompilerer Swift mod både macOS- og iPhoneOS-SDK'et på en Mac-runner. Det kan køres manuelt, når workflowet er på forkens standardbranch, eller via push af ændringer til proberne eller workflowet. Kontrollér, at Actions er slået til i forken. Hardwareoptagelse kræver test på de fysiske enheder.
 
